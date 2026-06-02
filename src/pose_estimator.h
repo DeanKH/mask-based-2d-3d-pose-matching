@@ -32,6 +32,7 @@ struct SearchResult {
 struct ScoredCandidate {
   Pose6D pose;
   double iou;
+  double cost;
 };
 
 struct EstimationParams {
@@ -59,6 +60,7 @@ class PoseEstimator {
   double ComputeIoU(const cv::Mat& a, const cv::Mat& b) const;
 
   std::vector<ScoredCandidate> CoarseSearch(const cv::Mat& input_mask,
+                                            const cv::Mat& dt_input,
                                             const EstimationParams& params);
 
   SearchResult RefinePose(const ScoredCandidate& initial, const cv::Mat& input_mask,

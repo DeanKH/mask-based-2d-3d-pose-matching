@@ -147,7 +147,7 @@ static std::vector<glm::vec3> FibonacciSphere(int n) {
 }
 
 std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
-    const cv::Mat& input_mask, const EstimationParams& params) {
+    const cv::Mat& input_mask, const cv::Mat& dt_input, const EstimationParams& params) {
   cv::Moments m = cv::moments(input_mask, true);
   if (m.m00 == 0) return {};
 
@@ -157,6 +157,12 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
   double input_area = m.m00;
   double mesh_area_estimate = mesh_extent_[principal_axis_] *
                               *std::max_element(mesh_extent_, mesh_extent_ + 3);
+
+  double area_input = cv::countNonZero(input_mask);
+  double scale_factor = area_input > 0 ? 1.0 / std::sqrt(area_input) : 1.0;
+
+  cv::Mat dt_input_f;
+  dt_input.convertTo(dt_input_f, CV_32F);
 
   std::vector<double> depths;
   double depth_step = (params.depth_max - params.depth_min) / std::max(params.num_depth - 1, 1);
@@ -215,6 +221,24 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
         if (pose.tz < 0.01) continue;
 
         cv::Mat rendered = RenderPose(pose);
+
+        cv::Mat diff;
+        cv::absdiff(rendered, input_mask, diff);
+        diff.convertTo(diff, CV_32F, 1.0 / 255.0);
+
+        cv::Mat dt_rendered;
+        cv::distanceTransform(255 - rendered, dt_rendered, cv::DIST_L2, 5);
+        dt_rendered.convertTo(dt_rendered, CV_32F);
+
+        cv::Mat dt_combined = cv::max(dt_input_f, dt_rendered);
+        double chamfer = cv::sum(dt_combined.mul(diff))[0] * scale_factor;
+
+        double area_rendered = cv::countNonZero(rendered);
+        double area_ratio = area_input > 0
+                                ? std::abs(area_rendered - area_input) / area_input
+                                : 0.0;
+
+        double cost = chamfer + 0.5 * area_ratio;
         double iou = ComputeIoU(rendered, input_mask);
 
         if (viz_) {
@@ -222,14 +246,14 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
         }
         candidate_index++;
 
-        candidates.push_back({pose, iou});
+        candidates.push_back({pose, iou, cost});
       }
     }
   }
 
   std::sort(candidates.begin(), candidates.end(),
             [](const ScoredCandidate& a, const ScoredCandidate& b) {
-              return a.iou > b.iou;
+              return a.cost < b.cost;
             });
 
   if (static_cast<int>(candidates.size()) > params.top_k_coarse) {
@@ -341,7 +365,7 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
   cv::Mat dt_input;
   cv::distanceTransform(255 - binary_mask, dt_input, cv::DIST_L2, 5);
 
-  auto coarse = CoarseSearch(binary_mask, params);
+  auto coarse = CoarseSearch(binary_mask, dt_input, params);
 
   if (coarse.empty()) {
     SearchResult result;
