@@ -36,13 +36,18 @@ struct ScoredCandidate {
 };
 
 struct EstimationParams {
-  int num_directions = 24;
+  int num_directions = 48;
   int num_in_plane = 4;
   int num_depth = 5;
   double depth_min = 0.05;
   double depth_max = 0.50;
   int top_k_coarse = 10;
   int nelder_mead_iterations = 200;
+  int local_directions = 6;
+  int local_in_plane = 6;
+  int local_depth = 3;
+  double local_cone_half_angle_deg = 30.0;
+  int top_k_local = 5;
 };
 
 class PoseEstimator {
@@ -63,6 +68,11 @@ class PoseEstimator {
                                             const cv::Mat& dt_input,
                                             const EstimationParams& params);
 
+  std::vector<ScoredCandidate> LocalSearch(
+      const std::vector<ScoredCandidate>& coarse_best,
+      const cv::Mat& input_mask, const cv::Mat& dt_input,
+      const EstimationParams& params);
+
   SearchResult RefinePose(const ScoredCandidate& initial, const cv::Mat& input_mask,
                           const cv::Mat& dt_input, int max_iterations, int refine_index);
 
@@ -74,6 +84,9 @@ class PoseEstimator {
   int principal_axis_;
   float mesh_centroid_[3];
   float mesh_extent_[3];
+  Pose6D correct_pose_for_comparison_{};
+  double correct_cost_for_comparison_ = -1;
+  double correct_iou_for_comparison_ = -1;
 };
 
 }  // namespace pose_matching

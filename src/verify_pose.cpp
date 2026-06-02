@@ -169,6 +169,34 @@ int main(int argc, char* argv[]) {
   mask_colored.setTo(cv::Scalar(0, 255, 0), rendered_mask);
   cv::addWeighted(overlay, 1.0, mask_colored, 0.3, 0, overlay);
 
+  // Also overlay input mask in red for comparison
+  cv::Mat input_mask = cv::imread("mask.png", cv::IMREAD_GRAYSCALE);
+  if (!input_mask.empty()) {
+    cv::Mat mask_red = cv::Mat::zeros(overlay.size(), CV_8UC3);
+    mask_red.setTo(cv::Scalar(0, 0, 255), input_mask);
+    cv::addWeighted(overlay, 1.0, mask_red, 0.3, 0, overlay);
+
+    double iou = 0;
+    int a_count = 0, b_count = 0, ab_count = 0;
+    for (int r = 0; r < rendered_mask.rows; ++r) {
+      const auto* pa = rendered_mask.ptr<uint8_t>(r);
+      const auto* pb = input_mask.ptr<uint8_t>(r);
+      for (int c = 0; c < rendered_mask.cols; ++c) {
+        bool va = pa[c] > 127;
+        bool vb = pb[c] > 127;
+        a_count += va;
+        b_count += vb;
+        ab_count += (va && vb);
+      }
+    }
+    if (a_count + b_count - ab_count > 0)
+      iou = static_cast<double>(ab_count) / (a_count + b_count - ab_count);
+    std::cout << "IoU with input mask: " << iou << "\n";
+  }
+
+  cv::imwrite("verify_overlay.png", overlay);
+  std::cout << "Overlay saved to: verify_overlay.png\n";
+
   std::cout << "Mask pixels: " << cv::countNonZero(rendered_mask) << "\n";
 
   rerun::RecordingStream rec("verify_pose");
