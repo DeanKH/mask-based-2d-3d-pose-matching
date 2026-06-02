@@ -3,6 +3,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <numeric>
@@ -200,6 +201,8 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
   std::vector<ScoredCandidate> candidates;
   candidates.reserve(directions.size() * params.num_in_plane * depths.size());
 
+  double ms_coarse_render = 0, ms_coarse_iou = 0;
+  int coarse_count = 0;
   int candidate_index = 0;
   for (const auto& dir : directions) {
     for (int ip = 0; ip < params.num_in_plane; ++ip) {
@@ -227,13 +230,15 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
 
         if (pose.tz < 0.01) continue;
 
+        auto tc0 = std::chrono::high_resolution_clock::now();
         cv::Mat rendered = RenderPose(pose);
+        auto tc1 = std::chrono::high_resolution_clock::now();
         double iou = ComputeIoU(rendered, input_mask);
+        auto tc2 = std::chrono::high_resolution_clock::now();
 
-        if (viz_) {
-          viz_->LogCandidate(candidate_index, pose, rendered, iou);
-        }
-        candidate_index++;
+        ms_coarse_render += std::chrono::duration<double, std::milli>(tc1 - tc0).count();
+        ms_coarse_iou += std::chrono::duration<double, std::milli>(tc2 - tc1).count();
+        coarse_count++;
 
         candidates.push_back({pose, iou, 1.0 - iou});
       }
@@ -245,15 +250,9 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
               return a.cost < b.cost;
             });
 
-  // Diversify: keep only one candidate per unique direction
   std::vector<ScoredCandidate> diverse;
-  auto dir_key = [](const Pose6D& p) -> int {
-    return static_cast<int>(p.rx * 100) + static_cast<int>(p.ry * 10000) +
-           static_cast<int>(p.rz * 1000000);
-  };
   std::set<int> seen_dirs;
   for (const auto& c : candidates) {
-    // Group by similar direction: quantize rotation
     int key = static_cast<int>(c.pose.rx * 10) * 100000 +
               static_cast<int>(c.pose.ry * 10) * 1000 +
               static_cast<int>(c.pose.rz * 10);
@@ -264,18 +263,11 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
   }
   candidates = diverse;
 
-  std::cout << "Top " << candidates.size() << " coarse candidates:\n";
-  for (size_t i = 0; i < candidates.size(); ++i) {
-    glm::mat4 Rc = glm::mat4(1.0f);
-    Rc = glm::rotate(Rc, static_cast<float>(candidates[i].pose.rz), glm::vec3(0, 0, 1));
-    Rc = glm::rotate(Rc, static_cast<float>(candidates[i].pose.ry), glm::vec3(0, 1, 0));
-    Rc = glm::rotate(Rc, static_cast<float>(candidates[i].pose.rx), glm::vec3(1, 0, 0));
-    glm::vec3 src(0, 0, 0); src[principal_axis_] = 1.0f;
-    glm::vec3 d = glm::normalize(glm::vec3(Rc * glm::vec4(src, 0.0f)));
-    std::cout << "  [" << i << "] iou=" << candidates[i].iou
-              << " cost=" << candidates[i].cost
-              << " tz=" << candidates[i].pose.tz
-              << " dir=(" << d.x << "," << d.y << "," << d.z << ")\n";
+  if (coarse_count > 0) {
+    std::cout << "Coarse: " << coarse_count << " candidates, "
+              << ms_coarse_render << " ms render ("
+              << ms_coarse_render / coarse_count << " ms/call), "
+              << ms_coarse_iou << " ms iou\n";
   }
 
   if (viz_) {
@@ -299,7 +291,8 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
   cv::Mat dt_input_f;
   dt_input.convertTo(dt_input_f, CV_32F);
 
-  int viz_iteration = 0;
+  double ms_render = 0, ms_dt = 0, ms_other = 0;
+  int cost_calls = 0;
   auto cost = [&](const std::vector<double>& params) -> double {
     Pose6D p;
     p.tx = params[0];
@@ -311,7 +304,9 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
 
     if (p.tz < 0.01) return 1e6;
 
+    auto tc0 = std::chrono::high_resolution_clock::now();
     cv::Mat rendered = RenderPose(p);
+    auto tc1 = std::chrono::high_resolution_clock::now();
 
     cv::Mat diff;
     cv::absdiff(rendered, input_mask, diff);
@@ -320,6 +315,7 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
     cv::Mat dt_rendered;
     cv::distanceTransform(255 - rendered, dt_rendered, cv::DIST_L2, 5);
     dt_rendered.convertTo(dt_rendered, CV_32F);
+    auto tc2 = std::chrono::high_resolution_clock::now();
 
     cv::Mat dt_combined = cv::max(dt_input_f, dt_rendered);
 
@@ -332,11 +328,16 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
 
     double c = chamfer + 0.5 * area_ratio;
 
-    if (viz_ && viz_iteration % 5 == 0) {
+    auto tc3 = std::chrono::high_resolution_clock::now();
+    ms_render += std::chrono::duration<double, std::milli>(tc1 - tc0).count();
+    ms_dt    += std::chrono::duration<double, std::milli>(tc2 - tc1).count();
+    ms_other += std::chrono::duration<double, std::milli>(tc3 - tc2).count();
+    cost_calls++;
+
+    if (viz_ && cost_calls % 5 == 0) {
       double cur_iou = ComputeIoU(rendered, input_mask);
-      viz_->LogRefineStep(refine_index * 10000 + viz_iteration, p, rendered, c, cur_iou);
+      viz_->LogRefineStep(refine_index * 10000 + cost_calls, p, rendered, c, cur_iou);
     }
-    viz_iteration++;
 
     return c;
   };
@@ -347,6 +348,15 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
   };
 
   NelderMead(cost, x, initial_step, max_iterations);
+
+  if (cost_calls > 0) {
+    std::cout << "  Refine #" << refine_index
+              << ": " << cost_calls << " cost calls, "
+              << ms_render << " ms render, "
+              << ms_dt << " ms dt, "
+              << ms_other << " ms other, "
+              << (ms_render + ms_dt + ms_other) / cost_calls << " ms/call\n";
+  }
 
   Pose6D refined;
   refined.tx = x[0];
@@ -516,7 +526,9 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
   cv::Mat dt_input;
   cv::distanceTransform(255 - binary_mask, dt_input, cv::DIST_L2, 5);
 
+  auto t0 = std::chrono::high_resolution_clock::now();
   auto coarse = CoarseSearch(binary_mask, dt_input, params);
+  auto t1 = std::chrono::high_resolution_clock::now();
 
   if (coarse.empty()) {
     SearchResult result;
@@ -525,6 +537,7 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
   }
 
   auto local = LocalSearch(coarse, binary_mask, dt_input, params);
+  auto t2 = std::chrono::high_resolution_clock::now();
 
   // Combine coarse and local candidates for refinement
   std::vector<ScoredCandidate> refine_candidates;
@@ -629,6 +642,17 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
       best_result = refined;
     }
   }
+  auto t3 = std::chrono::high_resolution_clock::now();
+
+  double ms_coarse = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  double ms_local  = std::chrono::duration<double, std::milli>(t2 - t1).count();
+  double ms_refine = std::chrono::duration<double, std::milli>(t3 - t2).count();
+  double ms_total  = std::chrono::duration<double, std::milli>(t3 - t0).count();
+  std::cout << "\n=== Timing ===\n"
+            << "Coarse search: " << ms_coarse  << " ms\n"
+            << "Local search:  " << ms_local   << " ms\n"
+            << "Refine (NM):   " << ms_refine  << " ms\n"
+            << "Total:         " << ms_total   << " ms\n";
 
   if (viz_) {
     cv::Mat final_rendered = RenderPose(best_result.pose);
