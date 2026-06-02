@@ -254,6 +254,9 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
   double area_input = cv::countNonZero(input_mask);
   double scale_factor = area_input > 0 ? 1.0 / std::sqrt(area_input) : 1.0;
 
+  cv::Mat dt_input_f;
+  dt_input.convertTo(dt_input_f, CV_32F);
+
   int viz_iteration = 0;
   auto cost = [&](const std::vector<double>& params) -> double {
     Pose6D p;
@@ -272,18 +275,20 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
     cv::absdiff(rendered, input_mask, diff);
     diff.convertTo(diff, CV_32F, 1.0 / 255.0);
 
-    cv::Mat weighted;
-    dt_input.convertTo(weighted, CV_32F);
-    weighted = weighted.mul(diff);
+    cv::Mat dt_rendered;
+    cv::distanceTransform(255 - rendered, dt_rendered, cv::DIST_L2, 5);
+    dt_rendered.convertTo(dt_rendered, CV_32F);
 
-    double chamfer = cv::sum(weighted)[0] * scale_factor;
+    cv::Mat dt_combined = cv::max(dt_input_f, dt_rendered);
+
+    double chamfer = cv::sum(dt_combined.mul(diff))[0] * scale_factor;
 
     double area_rendered = cv::countNonZero(rendered);
     double area_ratio = area_input > 0
                             ? std::abs(area_rendered - area_input) / area_input
                             : 0.0;
 
-    double c = chamfer + 0.1 * area_ratio;
+    double c = chamfer + 0.5 * area_ratio;
 
     if (viz_ && viz_iteration % 5 == 0) {
       double cur_iou = ComputeIoU(rendered, input_mask);
