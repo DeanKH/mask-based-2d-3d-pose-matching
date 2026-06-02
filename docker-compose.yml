@@ -12,5 +12,5 @@ services:
       "--scale", "0.001",
       "--image", "/workspace/input.png",
       "--output", "/workspace/result.png",
-      "--rerun", "/workspace/pose_matching.rrd"
+      "--rerun", "/workspace"
     ]

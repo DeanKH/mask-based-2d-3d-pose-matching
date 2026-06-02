@@ -1,7 +1,10 @@
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -34,7 +37,7 @@ static void PrintUsage(const char* program) {
       << "  --depth-steps INT    Number of depth samples (default: 5)\n"
       << "  --top-k INT          Top K candidates for refinement (default: 10)\n"
       << "  --max-refine INT     Max refinement iterations (default: 200)\n"
-      << "  --rerun PATH         Enable rerun visualization, save to .rrd file\n"
+       << "  --rerun [DIR]        Enable rerun visualization, save to DIR (default: .)\n"
       << "  -h, --help           Show this help\n";
 }
 
@@ -47,7 +50,8 @@ int main(int argc, char* argv[]) {
   std::string image_path;
   std::string output_path = "result.png";
   std::string output_pose_path = "pose_result.json";
-  std::string rerun_path;
+  std::string rerun_dir;
+  bool rerun_enabled = false;
   float model_scale = 1.0f;
   pose_matching::EstimationParams est_params;
 
@@ -108,8 +112,12 @@ int main(int argc, char* argv[]) {
       if (++i >= args.size()) return 1;
       est_params.nelder_mead_iterations = std::stoi(args[i]);
     } else if (arg == "--rerun") {
-      if (++i >= args.size()) return 1;
-      rerun_path = args[i];
+      if (i + 1 < args.size() && args[i + 1][0] != '-') {
+        rerun_dir = args[++i];
+      } else {
+        rerun_dir = ".";
+      }
+      rerun_enabled = true;
     } else if (arg[0] == '-') {
       std::cerr << "Error: unknown option: " << arg << "\n";
       return 1;
@@ -161,7 +169,14 @@ int main(int argc, char* argv[]) {
     pose_matching::PoseEstimator estimator(camera_params, model_path, model_scale);
 
     std::unique_ptr<pose_matching::Visualizer> viz;
-    if (!rerun_path.empty()) {
+    if (rerun_enabled) {
+      auto now = std::chrono::system_clock::now();
+      auto time_t = std::chrono::system_clock::to_time_t(now);
+      std::ostringstream oss;
+      oss << rerun_dir << "/"
+          << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S")
+          << ".rrd";
+      std::string rerun_path = oss.str();
       viz = std::make_unique<pose_matching::RerunVisualizer>(rerun_path);
       estimator.SetVisualizer(viz.get());
     }
