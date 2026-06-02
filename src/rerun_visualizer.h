@@ -33,6 +33,8 @@ class RerunVisualizer : public Visualizer {
   rerun::RecordingStream rec_;
   cv::Mat input_mask_;
   bool mesh_logged_ = false;
+  std::vector<float> mesh_vertices_;
+  std::vector<uint32_t> mesh_indices_;
 };
 
 }  // namespace pose_matching

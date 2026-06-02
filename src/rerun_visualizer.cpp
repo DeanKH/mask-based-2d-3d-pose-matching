@@ -125,7 +125,10 @@ void RerunVisualizer::SetCamera(double fx, double fy, double cx, double cy, int 
 }
 
 void RerunVisualizer::SetMesh(const float* vertices, size_t vertex_count,
-                               const uint32_t* indices, size_t index_count) {
+                                const uint32_t* indices, size_t index_count) {
+  mesh_vertices_.assign(vertices, vertices + vertex_count * 3);
+  mesh_indices_.assign(indices, indices + index_count);
+
   auto positions = ConvertVertices(vertices, vertex_count);
   auto triangles = ConvertIndices(indices, index_count);
 
@@ -135,7 +138,7 @@ void RerunVisualizer::SetMesh(const float* vertices, size_t vertex_count,
 }
 
 void RerunVisualizer::LogCandidate(int index, const Pose6D& pose, const cv::Mat& rendered_mask,
-                                    double iou) {
+                                     double iou) {
   rec_.set_time_sequence("candidate", index);
 
   rec_.log("masks/rendered", MatToImage(rendered_mask));
@@ -143,6 +146,12 @@ void RerunVisualizer::LogCandidate(int index, const Pose6D& pose, const cv::Mat&
   rec_.log("scores/iou", rerun::Scalars(iou));
 
   rec_.log("scene/object", MakeTransform(pose));
+  if (!mesh_vertices_.empty()) {
+    auto positions = ConvertVertices(mesh_vertices_.data(), mesh_vertices_.size() / 3);
+    auto triangles = ConvertIndices(mesh_indices_.data(), mesh_indices_.size());
+    rec_.log("scene/object/mesh",
+             rerun::Mesh3D(std::move(positions)).with_triangle_indices(std::move(triangles)));
+  }
 
   std::string label = "candidate " + std::to_string(index) + " | IoU=" +
                       std::to_string(iou).substr(0, 6) +
@@ -163,7 +172,7 @@ void RerunVisualizer::LogCoarseComplete(const std::vector<ScoredCandidate>& top_
 }
 
 void RerunVisualizer::LogRefineStep(int iteration, const Pose6D& pose,
-                                     const cv::Mat& rendered_mask, double cost, double iou) {
+                                      const cv::Mat& rendered_mask, double cost, double iou) {
   rec_.set_time_sequence("refine", iteration);
 
   rec_.log("masks/refined", MatToImage(rendered_mask));
@@ -172,6 +181,12 @@ void RerunVisualizer::LogRefineStep(int iteration, const Pose6D& pose,
   rec_.log("scores/iou_refined", rerun::Scalars(iou));
 
   rec_.log("scene/object_refined", MakeTransform(pose));
+  if (!mesh_vertices_.empty()) {
+    auto positions = ConvertVertices(mesh_vertices_.data(), mesh_vertices_.size() / 3);
+    auto triangles = ConvertIndices(mesh_indices_.data(), mesh_indices_.size());
+    rec_.log("scene/object_refined/mesh",
+             rerun::Mesh3D(std::move(positions)).with_triangle_indices(std::move(triangles)));
+  }
 
   rec_.log("info/refine",
            rerun::TextLog("iter=" + std::to_string(iteration) +
@@ -188,6 +203,13 @@ void RerunVisualizer::LogFinalResult(const Pose6D& pose, const cv::Mat& rendered
   rec_.log("scores/final_iou", rerun::Scalars(iou));
 
   rec_.log("scene/final", MakeTransform(pose));
+
+  if (!mesh_vertices_.empty()) {
+    auto positions = ConvertVertices(mesh_vertices_.data(), mesh_vertices_.size() / 3);
+    auto triangles = ConvertIndices(mesh_indices_.data(), mesh_indices_.size());
+    rec_.log("scene/final/mesh",
+             rerun::Mesh3D(std::move(positions)).with_triangle_indices(std::move(triangles)));
+  }
 
   rec_.log("info/final",
            rerun::TextLog("FINAL | IoU=" + std::to_string(iou).substr(0, 6) +
