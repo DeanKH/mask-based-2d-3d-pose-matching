@@ -1,6 +1,7 @@
 mask-generation/
 sam3-scripts/
 record/
+interactive-3d-annotation/
 *.png
 *.jpg
 *.rrd

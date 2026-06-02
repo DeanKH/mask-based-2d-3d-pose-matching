@@ -34,3 +34,15 @@ target_link_libraries(pose_matching
         nlohmann_json::nlohmann_json
         rerun_sdk
 )
+
+add_executable(verify_pose src/verify_pose.cpp)
+
+target_include_directories(verify_pose PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+target_link_libraries(verify_pose
+    PRIVATE
+        maskgen
+        ${OpenCV_LIBS}
+        nlohmann_json::nlohmann_json
+        rerun_sdk
+)

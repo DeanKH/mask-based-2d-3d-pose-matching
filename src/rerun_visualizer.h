@@ -9,6 +9,9 @@ namespace pose_matching {
 class RerunVisualizer : public Visualizer {
  public:
   explicit RerunVisualizer(const std::string& recording_path);
+  RerunVisualizer();
+  static std::unique_ptr<RerunVisualizer> ConnectGrpc(
+      const std::string& url = "rerun+http://127.0.0.1:9876/proxy");
   ~RerunVisualizer() override = default;
 
   void SetInputMask(const cv::Mat& mask) override;

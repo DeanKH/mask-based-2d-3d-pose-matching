@@ -9,10 +9,23 @@
 
 namespace pose_matching {
 
+RerunVisualizer::RerunVisualizer() : rec_("pose_matching") {}
+
 RerunVisualizer::RerunVisualizer(const std::string& recording_path)
     : rec_("pose_matching") {
   rec_.save(recording_path).exit_on_failure();
   std::cout << "Rerun recording: " << recording_path << "\n";
+}
+
+std::unique_ptr<RerunVisualizer> RerunVisualizer::ConnectGrpc(const std::string& url) {
+  auto viz = std::unique_ptr<RerunVisualizer>(new RerunVisualizer());
+  auto err = viz->rec_.connect_grpc(url);
+  if (err.is_err()) {
+    std::cerr << "Rerun connect error: " << err.description << "\n";
+    return nullptr;
+  }
+  std::cout << "Rerun streaming to: " << url << "\n";
+  return viz;
 }
 
 rerun::Collection<rerun::Position3D> RerunVisualizer::ConvertVertices(const float* vertices,

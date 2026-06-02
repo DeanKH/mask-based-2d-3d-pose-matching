@@ -14,3 +14,19 @@ services:
       "--output", "/workspace/result.png",
       "--rerun", "/workspace"
     ]
+
+  verify-pose:
+    build: .
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - .:/workspace
+    network_mode: host
+    entrypoint: ["/opt/build/verify_pose"]
+    command: [
+      "--model", "/workspace/mask-generation/model/pen.step",
+      "--camera", "/workspace/camera_info.json",
+      "--image", "/workspace/input.png",
+      "--pose", "/workspace/correct_pose.json",
+      "--scale", "0.001"
+    ]
