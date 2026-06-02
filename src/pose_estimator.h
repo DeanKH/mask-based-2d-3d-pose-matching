@@ -1,0 +1,77 @@
+#pragma once
+
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <maskgen/camera.h>
+#include <maskgen/mask_generator.h>
+#include <maskgen/mesh.h>
+
+#include <opencv2/core.hpp>
+
+namespace pose_matching {
+
+class Visualizer;
+
+struct Pose6D {
+  double tx = 0;
+  double ty = 0;
+  double tz = 0;
+  double rx = 0;
+  double ry = 0;
+  double rz = 0;
+};
+
+struct SearchResult {
+  Pose6D pose;
+  double iou = 0;
+};
+
+struct ScoredCandidate {
+  Pose6D pose;
+  double iou;
+};
+
+struct EstimationParams {
+  int num_directions = 24;
+  int num_in_plane = 4;
+  int num_depth = 5;
+  double depth_min = 0.05;
+  double depth_max = 0.50;
+  int top_k_coarse = 10;
+  int nelder_mead_iterations = 200;
+};
+
+class PoseEstimator {
+ public:
+  PoseEstimator(const maskgen::CameraParams& camera_params,
+                const std::string& model_path, float model_scale);
+
+  void SetVisualizer(Visualizer* viz);
+
+  SearchResult Estimate(const cv::Mat& input_mask,
+                        const EstimationParams& params = EstimationParams());
+
+ private:
+  cv::Mat RenderPose(const Pose6D& pose);
+  double ComputeIoU(const cv::Mat& a, const cv::Mat& b) const;
+
+  std::vector<ScoredCandidate> CoarseSearch(const cv::Mat& input_mask,
+                                            const EstimationParams& params);
+
+  SearchResult RefinePose(const ScoredCandidate& initial, const cv::Mat& input_mask,
+                          const cv::Mat& dt_input, int max_iterations, int refine_index);
+
+  maskgen::CameraParams camera_params_;
+  maskgen::Mesh mesh_;
+  std::unique_ptr<maskgen::MaskGenerator> generator_;
+  Visualizer* viz_ = nullptr;
+
+  int principal_axis_;
+  float mesh_centroid_[3];
+  float mesh_extent_[3];
+};
+
+}  // namespace pose_matching

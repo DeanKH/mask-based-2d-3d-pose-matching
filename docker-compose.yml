@@ -1,0 +1,16 @@
+services:
+  pose-matching:
+    build: .
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - .:/workspace
+    command: [
+      "--mask", "/workspace/mask.png",
+      "--camera", "/workspace/camera_info.json",
+      "--model", "/workspace/mask-generation/model/pen.step",
+      "--scale", "0.001",
+      "--image", "/workspace/input.png",
+      "--output", "/workspace/result.png",
+      "--rerun", "/workspace/pose_matching.rrd"
+    ]
