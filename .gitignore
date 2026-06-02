@@ -3,4 +3,4 @@ sam3-scripts/
 record/
 *.png
 *.jpg
-
+*.rrd
