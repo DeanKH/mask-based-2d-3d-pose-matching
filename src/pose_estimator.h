@@ -36,13 +36,13 @@ struct ScoredCandidate {
 };
 
 struct EstimationParams {
-  int num_directions = 20;
-  int num_in_plane = 2;
-  int num_depth = 3;
+  int num_directions = 48;
+  int num_in_plane = 4;
+  int num_depth = 5;
   double depth_min = 0.05;
   double depth_max = 0.50;
-  int top_k_coarse = 3;
-  int nelder_mead_iterations = 150;
+  int top_k_coarse = 10;
+  int nelder_mead_iterations = 200;
   int local_directions = 6;
   int local_in_plane = 6;
   int local_depth = 3;
