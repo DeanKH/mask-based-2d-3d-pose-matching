@@ -166,7 +166,11 @@ int main(int argc, char* argv[]) {
             << " candidates\n";
 
   try {
+    auto t_load_start = std::chrono::high_resolution_clock::now();
     pose_matching::PoseEstimator estimator(camera_params, model_path, model_scale);
+    auto t_load_end = std::chrono::high_resolution_clock::now();
+    double load_ms = std::chrono::duration<double, std::milli>(t_load_end - t_load_start).count();
+    std::cout << "[Timing] Model loading: " << load_ms << " ms\n";
 
     std::unique_ptr<pose_matching::Visualizer> viz;
     if (rerun_enabled) {
@@ -181,7 +185,11 @@ int main(int argc, char* argv[]) {
       estimator.SetVisualizer(viz.get());
     }
 
+    auto t_est_start = std::chrono::high_resolution_clock::now();
     auto result = estimator.Estimate(input_mask, est_params);
+    auto t_est_end = std::chrono::high_resolution_clock::now();
+    double est_ms = std::chrono::duration<double, std::milli>(t_est_end - t_est_start).count();
+    std::cout << "[Timing] Estimate (from main): " << est_ms << " ms\n";
 
     std::cout << "\n=== Result ===\n";
     std::cout << "Translation: tx=" << result.pose.tx << " ty=" << result.pose.ty
@@ -214,6 +222,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (!image_path.empty()) {
+      auto t_viz_start = std::chrono::high_resolution_clock::now();
       cv::Mat rgb = cv::imread(image_path);
       if (!rgb.empty()) {
         maskgen::MeshPose mp;
@@ -257,6 +266,9 @@ int main(int argc, char* argv[]) {
           std::cout << "Visualization saved to: " << output_path << "\n";
         }
       }
+      auto t_viz_end = std::chrono::high_resolution_clock::now();
+      double viz_ms = std::chrono::duration<double, std::milli>(t_viz_end - t_viz_start).count();
+      std::cout << "[Timing] Visualization output: " << viz_ms << " ms\n";
     }
   } catch (const std::exception& e) {
     std::cerr << "Error: " << e.what() << "\n";

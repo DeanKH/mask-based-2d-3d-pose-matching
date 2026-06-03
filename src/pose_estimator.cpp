@@ -1,5 +1,6 @@
 #include "pose_estimator.h"
 
+#include <chrono>
 #include <cmath>
 #include <algorithm>
 #include <cfloat>
@@ -497,6 +498,9 @@ std::vector<ScoredCandidate> PoseEstimator::LocalSearch(
 
 SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
                                      const EstimationParams& params) {
+  auto t_total_start = std::chrono::high_resolution_clock::now();
+
+  auto t0 = std::chrono::high_resolution_clock::now();
   cv::Mat binary_mask;
   if (input_mask.channels() > 1) {
     cv::cvtColor(input_mask, binary_mask, cv::COLOR_BGR2GRAY);
@@ -515,8 +519,15 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
 
   cv::Mat dt_input;
   cv::distanceTransform(255 - binary_mask, dt_input, cv::DIST_L2, 5);
+  auto t1 = std::chrono::high_resolution_clock::now();
+  double preprocess_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  std::cout << "[Timing] Preprocessing: " << preprocess_ms << " ms\n";
 
+  auto t_coarse_start = std::chrono::high_resolution_clock::now();
   auto coarse = CoarseSearch(binary_mask, dt_input, params);
+  auto t_coarse_end = std::chrono::high_resolution_clock::now();
+  double coarse_ms = std::chrono::duration<double, std::milli>(t_coarse_end - t_coarse_start).count();
+  std::cout << "[Timing] CoarseSearch: " << coarse_ms << " ms\n";
 
   if (coarse.empty()) {
     SearchResult result;
@@ -524,7 +535,11 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
     return result;
   }
 
+  auto t_local_start = std::chrono::high_resolution_clock::now();
   auto local = LocalSearch(coarse, binary_mask, dt_input, params);
+  auto t_local_end = std::chrono::high_resolution_clock::now();
+  double local_ms = std::chrono::duration<double, std::milli>(t_local_end - t_local_start).count();
+  std::cout << "[Timing] LocalSearch: " << local_ms << " ms\n";
 
   // Combine coarse and local candidates for refinement
   std::vector<ScoredCandidate> refine_candidates;
@@ -568,6 +583,7 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
   SearchResult best_result;
   best_result.iou = -1;
 
+  auto t_correct_start = std::chrono::high_resolution_clock::now();
   // Also evaluate the correct pose if available (for debugging)
   // Check if correct_pose.json exists
   {
@@ -620,7 +636,11 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
       correct_iou_for_comparison_ = correct_iou;
     }
   }
+  auto t_correct_end = std::chrono::high_resolution_clock::now();
+  double correct_ms = std::chrono::duration<double, std::milli>(t_correct_end - t_correct_start).count();
+  std::cout << "[Timing] CorrectPose eval: " << correct_ms << " ms\n";
 
+  auto t_refine_start = std::chrono::high_resolution_clock::now();
   int refine_count = std::min(static_cast<int>(refine_candidates.size()), 10);
   for (int i = 0; i < refine_count; ++i) {
     SearchResult refined =
@@ -629,6 +649,9 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
       best_result = refined;
     }
   }
+  auto t_refine_end = std::chrono::high_resolution_clock::now();
+  double refine_ms = std::chrono::duration<double, std::milli>(t_refine_end - t_refine_start).count();
+  std::cout << "[Timing] RefinePose (x" << refine_count << "): " << refine_ms << " ms\n";
 
   if (viz_) {
     cv::Mat final_rendered = RenderPose(best_result.pose);
@@ -662,6 +685,20 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
       std::cout << ">> Correct pose has lower cost\n";
     }
   }
+
+  auto t_total_end = std::chrono::high_resolution_clock::now();
+  double total_ms = std::chrono::duration<double, std::milli>(t_total_end - t_total_start).count();
+  std::cout << "[Timing] Estimate total: " << total_ms << " ms\n";
+  std::cout << "[Timing]   Preprocessing: " << preprocess_ms << " ms ("
+            << 100.0 * preprocess_ms / total_ms << "%)\n";
+  std::cout << "[Timing]   CoarseSearch:  " << coarse_ms << " ms ("
+            << 100.0 * coarse_ms / total_ms << "%)\n";
+  std::cout << "[Timing]   LocalSearch:   " << local_ms << " ms ("
+            << 100.0 * local_ms / total_ms << "%)\n";
+  std::cout << "[Timing]   CorrectPose:   " << correct_ms << " ms ("
+            << 100.0 * correct_ms / total_ms << "%)\n";
+  std::cout << "[Timing]   RefinePose:    " << refine_ms << " ms ("
+            << 100.0 * refine_ms / total_ms << "%)\n";
 
   return best_result;
 }
