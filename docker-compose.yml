@@ -53,12 +53,31 @@ services:
       - .:/workspace
     entrypoint: ["/opt/build/pose_matching_cached"]
     command: [
-      "--mask", "/workspace/mask-4.png",
+      "--mask", "/workspace/mask.png",
       "--camera", "/workspace/camera_info.json",
       "--model", "/workspace/mask-generation/model/pen.step",
       "--scale", "0.001",
       "--cache", "/workspace/pose_cache.bin",
       "--image", "/workspace/input.png",
-      "--output", "/workspace/result2_cached.png",
+      "--output", "/workspace/result_cached.png",
       "--rerun", "/workspace"
+    ]
+
+  visualize-poses:
+    build: .
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - .:/workspace
+    network_mode: host
+    entrypoint: ["/opt/build/visualize_poses"]
+    command: [
+      "--camera", "/workspace/camera_info.json",
+      "--model", "/workspace/mask-generation/model/pen.step",
+      "--scale", "0.001",
+      "--pose", "/workspace/pose_result-0.json",
+      "--pose", "/workspace/pose_result-1.json",
+      "--pose", "/workspace/pose_result-2.json",
+      "--rerun-grpc", "rerun+http://127.0.0.1:9876/proxy",
+      # "--rerun", "/workspace/poses.rrd"
     ]

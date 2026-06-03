@@ -94,3 +94,15 @@ target_link_libraries(pose_matching_cached
         nlohmann_json::nlohmann_json
         rerun_sdk
 )
+
+add_executable(visualize_poses src/visualize_poses_main.cpp)
+
+target_include_directories(visualize_poses PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+target_link_libraries(visualize_poses
+    PRIVATE
+        maskgen
+        ${OpenCV_LIBS}
+        nlohmann_json::nlohmann_json
+        rerun_sdk
+)
