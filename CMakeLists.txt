@@ -8,6 +8,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(OpenCV REQUIRED)
 find_package(nlohmann_json 3.2.0 REQUIRED)
+find_package(ZLIB REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(rerun_sdk URL
@@ -42,6 +44,52 @@ target_include_directories(verify_pose PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(verify_pose
     PRIVATE
         maskgen
+        ${OpenCV_LIBS}
+        nlohmann_json::nlohmann_json
+        rerun_sdk
+)
+
+set(CACHE_LIB_SOURCES
+    src/cache_format.cpp
+)
+
+add_library(cache_lib STATIC ${CACHE_LIB_SOURCES})
+
+target_include_directories(cache_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+target_link_libraries(cache_lib
+    PUBLIC
+        ${OpenCV_LIBS}
+        ZLIB::ZLIB
+        OpenSSL::Crypto
+)
+
+add_executable(pose_cache_builder src/cache_builder_main.cpp)
+
+target_include_directories(pose_cache_builder PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+target_link_libraries(pose_cache_builder
+    PRIVATE
+        maskgen
+        cache_lib
+        ${OpenCV_LIBS}
+        nlohmann_json::nlohmann_json
+)
+
+set(CACHED_SOURCES
+    src/cached_main.cpp
+    src/cached_pose_estimator.cpp
+    src/rerun_visualizer.cpp
+)
+
+add_executable(pose_matching_cached ${CACHED_SOURCES})
+
+target_include_directories(pose_matching_cached PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+target_link_libraries(pose_matching_cached
+    PRIVATE
+        maskgen
+        cache_lib
         ${OpenCV_LIBS}
         nlohmann_json::nlohmann_json
         rerun_sdk

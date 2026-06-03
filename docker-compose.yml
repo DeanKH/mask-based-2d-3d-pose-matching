@@ -30,3 +30,35 @@ services:
       "--pose", "/workspace/correct_pose.json",
       "--scale", "0.001"
     ]
+
+  cache-builder:
+    build: .
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - .:/workspace
+    entrypoint: ["/opt/build/pose_cache_builder"]
+    command: [
+      "--camera", "/workspace/camera_info.json",
+      "--model", "/workspace/mask-generation/model/pen.step",
+      "--scale", "0.001",
+      "--output", "/workspace/pose_cache.bin"
+    ]
+
+  pose-matching-cached:
+    build: .
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - .:/workspace
+    entrypoint: ["/opt/build/pose_matching_cached"]
+    command: [
+      "--mask", "/workspace/mask-4.png",
+      "--camera", "/workspace/camera_info.json",
+      "--model", "/workspace/mask-generation/model/pen.step",
+      "--scale", "0.001",
+      "--cache", "/workspace/pose_cache.bin",
+      "--image", "/workspace/input.png",
+      "--output", "/workspace/result2_cached.png",
+      "--rerun", "/workspace"
+    ]
