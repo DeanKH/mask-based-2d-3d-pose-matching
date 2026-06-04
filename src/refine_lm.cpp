@@ -172,26 +172,26 @@ SearchResult RefinePoseLM(
   auto robust_noise = gtsam::noiseModel::Robust::Create(
       gtsam::noiseModel::mEstimator::Huber::Create(5.0), base_noise);
 
+  gtsam::Pose3 initial_gtsam = Pose6DToGTSAM(initial.pose);
+  auto prior_noise = gtsam::noiseModel::Diagonal::Sigmas(
+      (gtsam::Vector6() << 0.02, 0.02, 0.02, 0.005, 0.005, 0.005).finished());
+
   gtsam::NonlinearFactorGraph graph;
   graph.emplace_shared<ContourDTFactor>(
       gtsam::Symbol('x', 0), gtsam_points, dt_edges, dt_grad_x, dt_grad_y,
       camera_params.fx, camera_params.fy, camera_params.cx, camera_params.cy,
       camera_params.width, camera_params.height, robust_noise);
-
-  gtsam::Pose3 initial_gtsam = Pose6DToGTSAM(initial.pose);
-  auto prior_noise = gtsam::noiseModel::Diagonal::Sigmas(
-      (gtsam::Vector6() << 0.02, 0.02, 0.02, 0.005, 0.005, 0.005).finished());
   graph.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(
       gtsam::Symbol('x', 0), initial_gtsam, prior_noise);
 
   gtsam::Values initial_estimate;
   initial_estimate.insert(gtsam::Symbol('x', 0), initial_gtsam);
 
-  gtsam::Values result;
-  double opt_error_before = graph.error(initial_estimate);
+  double cost_before = graph.error(initial_estimate);
 
   auto t_opt_start = std::chrono::high_resolution_clock::now();
 
+  gtsam::Values result;
   if (opts.optimizer == OptimizerType::LevenbergMarquardt) {
     gtsam::LevenbergMarquardtParams params;
     params.setMaxIterations(opts.max_iterations);
@@ -210,10 +210,10 @@ SearchResult RefinePoseLM(
 
   auto t_opt_end = std::chrono::high_resolution_clock::now();
   double opt_ms = std::chrono::duration<double, std::milli>(t_opt_end - t_opt_start).count();
-  double opt_error_after = graph.error(result);
 
   gtsam::Pose3 optimized = result.at<gtsam::Pose3>(gtsam::Symbol('x', 0));
   Pose6D refined = GTSAMToPose6D(optimized);
+  double cost_after = graph.error(result);
 
   maskgen::MeshPose mp;
   mp.tx = refined.tx;
@@ -247,7 +247,7 @@ SearchResult RefinePoseLM(
             << "] DT: " << dt_ms << " ms"
             << ", opt: " << opt_ms << " ms"
             << ", total: " << total_ms << " ms"
-            << ", cost: " << opt_error_before << " -> " << opt_error_after
+            << ", cost: " << cost_before << " -> " << cost_after
             << ", IoU: " << final_iou
             << (refined.tx == initial.pose.tx ? " (reverted)" : "")
             << "\n";
