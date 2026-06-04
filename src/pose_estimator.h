@@ -15,6 +15,12 @@
 
 namespace pose_matching {
 
+enum class RefineMethod {
+  NelderMead,
+  LevenbergMarquardt,
+  GaussNewton,
+};
+
 class Visualizer;
 
 struct Pose6D {
@@ -52,6 +58,11 @@ struct EstimationParams {
   int top_k_local = 5;
   int max_refine_candidates = 5;
   NelderMeadOptions nm_options;
+  RefineMethod refine_method = RefineMethod::LevenbergMarquardt;
+  int contour_points = 1000;
+  int lm_max_iterations = 100;
+  double lm_relative_tol = 1e-6;
+  double lm_absolute_tol = 1e-6;
 };
 
 class PoseEstimator {

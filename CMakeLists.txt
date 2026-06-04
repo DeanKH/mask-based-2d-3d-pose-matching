@@ -8,10 +8,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(ENABLE_PROFILER "Link gperftools CPU profiler" OFF)
 
+find_package(GTSAM REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(nlohmann_json 3.2.0 REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(rerun_sdk URL
@@ -81,12 +83,16 @@ target_link_libraries(pose_cache_builder
 set(CACHED_SOURCES
     src/cached_main.cpp
     src/cached_pose_estimator.cpp
+    src/contour_sampler.cpp
+    src/refine_lm.cpp
     src/rerun_visualizer.cpp
 )
 
 add_executable(pose_matching_cached ${CACHED_SOURCES})
 
-target_include_directories(pose_matching_cached PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(pose_matching_cached PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
 
 target_link_libraries(pose_matching_cached
     PRIVATE
@@ -96,6 +102,12 @@ target_link_libraries(pose_matching_cached
         nlohmann_json::nlohmann_json
         rerun_sdk
 )
+
+if(GTSAM_FOUND)
+    find_library(GTSAM_LIBRARY gtsam REQUIRED)
+    target_link_libraries(pose_matching_cached PRIVATE ${GTSAM_LIBRARY} tbb)
+    target_include_directories(pose_matching_cached PRIVATE ${GTSAM_INCLUDE_DIR} ${EIGEN3_INCLUDE_DIR})
+endif()
 
 if(ENABLE_PROFILER)
     find_library(PROFILER_LIB profiler REQUIRED)

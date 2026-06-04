@@ -11,8 +11,10 @@
 #include <opencv2/core.hpp>
 
 #include "cache_format.h"
+#include "contour_sampler.h"
 #include "nelder_mead.h"
 #include "pose_estimator.h"
+#include "refine_lm.h"
 
 namespace pose_matching {
 

@@ -4,6 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ca-certificates \
     cmake \
     git \
     libvulkan-dev \
@@ -22,7 +23,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     google-perftools \
     libgoogle-perftools-dev \
+    libeigen3-dev \
+    libtbb-dev \
+    libboost-all-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Build GTSAM from source
+RUN git clone --depth 1 https://github.com/borglab/gtsam.git /tmp/gtsam && \
+    cd /tmp/gtsam && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release \
+             -DGTSAM_USE_SYSTEM_EIGEN=ON \
+             -DGTSAM_BUILD_EXAMPLES_ALWAYS=OFF \
+             -DGTSAM_BUILD_TESTS=OFF \
+             -DGTSAM_BUILD_UNSTABLE=OFF \
+             -DGTSAM_INSTALL_MATLAB_TOOLBOX=OFF \
+             -DGTSAM_BUILD_PYTHON=OFF \
+             -DGTSAM_ENABLE_BOOST_SERIALIZATION=OFF && \
+    make -j$(nproc) && make install && \
+    ldconfig && \
+    rm -rf /tmp/gtsam
 
 WORKDIR /src
 

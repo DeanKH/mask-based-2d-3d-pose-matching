@@ -40,6 +40,10 @@ static void PrintUsage(const char* program) {
        << "  --fatol FLOAT        NM function tolerance (default: 1e-4)\n"
        << "  --xatol FLOAT        NM parameter tolerance (default: 1e-3)\n"
        << "  --patience INT       NM stagnation patience (default: 10)\n"
+       << "  --refine-method STR  Refine method: lm, gn, nelder-mead (default: lm)\n"
+       << "  --contour-points INT Number of contour sample points (default: 1000)\n"
+       << "  --lm-iterations INT  LM/GN max iterations (default: 100)\n"
+       << "  --lm-tolerance FLOAT LM/GN convergence tolerance (default: 1e-6)\n"
        << "  --rerun [DIR]        Enable rerun visualization, save to DIR (default: .)\n"
        << "  --profile PATH       Write gperftools CPU profile to PATH\n"
        << "  -h, --help           Show this help\n";
@@ -105,6 +109,23 @@ int main(int argc, char* argv[]) {
     } else if (arg == "--patience") {
       if (++i >= args.size()) return 1;
       est_params.nm_options.patience = std::stoi(args[i]);
+    } else if (arg == "--refine-method") {
+      if (++i >= args.size()) return 1;
+      const std::string& m = args[i];
+      if (m == "lm") est_params.refine_method = pose_matching::RefineMethod::LevenbergMarquardt;
+      else if (m == "gn") est_params.refine_method = pose_matching::RefineMethod::GaussNewton;
+      else if (m == "nelder-mead" || m == "nm") est_params.refine_method = pose_matching::RefineMethod::NelderMead;
+      else { std::cerr << "Error: unknown refine method: " << m << "\n"; return 1; }
+    } else if (arg == "--contour-points") {
+      if (++i >= args.size()) return 1;
+      est_params.contour_points = std::stoi(args[i]);
+    } else if (arg == "--lm-iterations") {
+      if (++i >= args.size()) return 1;
+      est_params.lm_max_iterations = std::stoi(args[i]);
+    } else if (arg == "--lm-tolerance") {
+      if (++i >= args.size()) return 1;
+      est_params.lm_relative_tol = std::stod(args[i]);
+      est_params.lm_absolute_tol = est_params.lm_relative_tol;
     } else if (arg == "--profile") {
       if (++i >= args.size()) return 1;
       profile_path = args[i];

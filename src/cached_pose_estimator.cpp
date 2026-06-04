@@ -12,6 +12,9 @@
 
 #include "profiling.h"
 
+#include "contour_sampler.h"
+#include "refine_lm.h"
+
 #include <nlohmann/json.hpp>
 
 #include <glm/glm.hpp>
@@ -550,12 +553,51 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
 
   auto t_refine_start = std::chrono::high_resolution_clock::now();
   int refine_count = std::min(static_cast<int>(refine_candidates.size()), params.max_refine_candidates);
-  for (int i = 0; i < refine_count; ++i) {
-    SearchResult refined =
-        RefinePose(refine_candidates[i], binary_mask, dt_input, params.nelder_mead_iterations, params.nm_options, i);
-    if (refined.iou > best_result.iou) {
-      best_result = refined;
+
+  if (params.refine_method == RefineMethod::NelderMead) {
+    for (int i = 0; i < refine_count; ++i) {
+      SearchResult refined =
+          RefinePose(refine_candidates[i], binary_mask, dt_input, params.nelder_mead_iterations, params.nm_options, i);
+      if (refined.iou > best_result.iou) {
+        best_result = refined;
+      }
     }
+    std::cout << "[Timing] RefinePose NM (x" << refine_count << ")\n";
+  } else {
+    LMOptions lm_opts;
+    lm_opts.optimizer = (params.refine_method == RefineMethod::GaussNewton)
+                            ? OptimizerType::GaussNewton
+                            : OptimizerType::LevenbergMarquardt;
+    lm_opts.max_iterations = params.lm_max_iterations;
+    lm_opts.relative_tol = params.lm_relative_tol;
+    lm_opts.absolute_tol = params.lm_absolute_tol;
+
+    for (int i = 0; i < refine_count; ++i) {
+      auto t_sample_start = std::chrono::high_resolution_clock::now();
+      maskgen::MeshPose init_mp;
+      init_mp.tx = refine_candidates[i].pose.tx;
+      init_mp.ty = refine_candidates[i].pose.ty;
+      init_mp.tz = refine_candidates[i].pose.tz;
+      init_mp.rx = refine_candidates[i].pose.rx;
+      init_mp.ry = refine_candidates[i].pose.ry;
+      init_mp.rz = refine_candidates[i].pose.rz;
+
+      auto contour_3d = SampleContour3D(
+          mesh_, init_mp, camera_params_, *generator_, params.contour_points);
+      auto t_sample_end = std::chrono::high_resolution_clock::now();
+      double sample_ms = std::chrono::duration<double, std::milli>(t_sample_end - t_sample_start).count();
+      std::cout << "[Timing] Contour sampling #" << i << ": " << sample_ms << " ms\n";
+
+      if (contour_3d.empty()) continue;
+
+      SearchResult refined = RefinePoseLM(
+          refine_candidates[i], binary_mask, contour_3d,
+          camera_params_, mesh_, *generator_, lm_opts, i);
+      if (refined.iou > best_result.iou) {
+        best_result = refined;
+      }
+    }
+    std::cout << "[Timing] RefinePose LM (x" << refine_count << ")\n";
   }
   auto t_refine_end = std::chrono::high_resolution_clock::now();
   double refine_ms = std::chrono::duration<double, std::milli>(t_refine_end - t_refine_start).count();
