@@ -4,10 +4,13 @@
 #include <cmath>
 #include <algorithm>
 #include <cfloat>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <numeric>
 #include <set>
+
+#include "profiling.h"
 
 #include <nlohmann/json.hpp>
 
@@ -300,7 +303,11 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
   dt_input.convertTo(dt_input_f, CV_32F);
 
   int viz_iteration = 0;
+  RefineProfiler prof;
   auto cost = [&](const std::vector<double>& params) -> double {
+    prof.cost_evals++;
+    auto t0 = std::chrono::high_resolution_clock::now();
+
     Pose6D p;
     p.tx = params[0];
     p.ty = params[1];
@@ -309,7 +316,11 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
     p.ry = params[4];
     p.rz = params[5];
 
-    if (p.tz < 0.01) return 1e6;
+    if (p.tz < 0.01) {
+      prof.total_wall_ms += std::chrono::duration<double, std::milli>(
+          std::chrono::high_resolution_clock::now() - t0).count();
+      return 1e6;
+    }
 
     maskgen::MeshPose mp;
     mp.tx = p.tx;
@@ -318,31 +329,54 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
     mp.rx = p.rx;
     mp.ry = p.ry;
     mp.rz = p.rz;
-    cv::Mat rendered = generator_->Generate(mesh_, mp);
+
+    cv::Mat rendered;
+    {
+      ScopedTimer t(prof.generate_ms);
+      rendered = generator_->Generate(mesh_, mp);
+    }
 
     cv::Mat diff;
-    cv::absdiff(rendered, input_mask, diff);
-    diff.convertTo(diff, CV_32F, 1.0 / 255.0);
+    {
+      ScopedTimer t(prof.absdiff_ms);
+      cv::absdiff(rendered, input_mask, diff);
+      diff.convertTo(diff, CV_32F, 1.0 / 255.0);
+    }
 
     cv::Mat dt_rendered;
-    cv::distanceTransform(255 - rendered, dt_rendered, cv::DIST_L2, 5);
-    dt_rendered.convertTo(dt_rendered, CV_32F);
+    {
+      ScopedTimer t(prof.dt_ms);
+      cv::distanceTransform(255 - rendered, dt_rendered, cv::DIST_L2, 5);
+      dt_rendered.convertTo(dt_rendered, CV_32F);
+    }
 
-    cv::Mat dt_combined = cv::max(dt_input_f, dt_rendered);
-    double chamfer = cv::sum(dt_combined.mul(diff))[0] * scale_factor;
+    double chamfer_val;
+    {
+      ScopedTimer t(prof.chamfer_ms);
+      cv::Mat dt_combined = cv::max(dt_input_f, dt_rendered);
+      chamfer_val = cv::sum(dt_combined.mul(diff))[0] * scale_factor;
+    }
 
-    double area_rendered = cv::countNonZero(rendered);
-    double area_ratio = area_input > 0
-                            ? std::abs(area_rendered - area_input) / area_input
-                            : 0.0;
+    double area_ratio;
+    {
+      ScopedTimer t(prof.area_ms);
+      double area_rendered = cv::countNonZero(rendered);
+      area_ratio = area_input > 0
+                       ? std::abs(area_rendered - area_input) / area_input
+                       : 0.0;
+    }
 
-    double c = chamfer + 0.5 * area_ratio;
+    double c = chamfer_val + 0.5 * area_ratio;
 
     if (viz_ && viz_iteration % 5 == 0) {
+      ScopedTimer t(prof.viz_ms);
       double cur_iou = ComputeIoU(rendered, input_mask);
       viz_->LogRefineStep(refine_index * 10000 + viz_iteration, p, rendered, c, cur_iou);
     }
     viz_iteration++;
+
+    prof.total_wall_ms += std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - t0).count();
 
     return c;
   };
@@ -353,6 +387,8 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
   };
 
   NelderMead(cost, x, initial_step, max_iterations, nm_opts);
+
+  prof.Print("RefinePose #" + std::to_string(refine_index));
 
   Pose6D refined;
   refined.tx = x[0];

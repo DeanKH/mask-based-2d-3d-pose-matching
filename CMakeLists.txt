@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(ENABLE_PROFILER "Link gperftools CPU profiler" OFF)
+
 find_package(OpenCV REQUIRED)
 find_package(nlohmann_json 3.2.0 REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -94,6 +96,12 @@ target_link_libraries(pose_matching_cached
         nlohmann_json::nlohmann_json
         rerun_sdk
 )
+
+if(ENABLE_PROFILER)
+    find_library(PROFILER_LIB profiler REQUIRED)
+    target_link_libraries(pose_matching_cached PRIVATE ${PROFILER_LIB})
+    target_compile_definitions(pose_matching_cached PRIVATE ENABLE_PROFILER)
+endif()
 
 add_executable(visualize_poses src/visualize_poses_main.cpp)
 

@@ -16,6 +16,10 @@
 #include "rerun_visualizer.h"
 #include "visualizer.h"
 
+#ifdef ENABLE_PROFILER
+#include <gperftools/profiler.h>
+#endif
+
 static void PrintUsage(const char* program) {
   std::cerr
       << "Usage: " << program
@@ -37,7 +41,8 @@ static void PrintUsage(const char* program) {
        << "  --xatol FLOAT        NM parameter tolerance (default: 1e-3)\n"
        << "  --patience INT       NM stagnation patience (default: 10)\n"
        << "  --rerun [DIR]        Enable rerun visualization, save to DIR (default: .)\n"
-      << "  -h, --help           Show this help\n";
+       << "  --profile PATH       Write gperftools CPU profile to PATH\n"
+       << "  -h, --help           Show this help\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -52,6 +57,7 @@ int main(int argc, char* argv[]) {
   std::string output_pose_path = "pose_result.json";
   std::string rerun_dir;
   bool rerun_enabled = false;
+  std::string profile_path;
   float model_scale = 1.0f;
   pose_matching::EstimationParams est_params;
 
@@ -99,6 +105,9 @@ int main(int argc, char* argv[]) {
     } else if (arg == "--patience") {
       if (++i >= args.size()) return 1;
       est_params.nm_options.patience = std::stoi(args[i]);
+    } else if (arg == "--profile") {
+      if (++i >= args.size()) return 1;
+      profile_path = args[i];
     } else if (arg == "--rerun") {
       if (i + 1 < args.size() && args[i + 1][0] != '-') {
         rerun_dir = args[++i];
@@ -167,11 +176,23 @@ int main(int argc, char* argv[]) {
       estimator.SetVisualizer(viz.get());
     }
 
+#ifdef ENABLE_PROFILER
+    if (!profile_path.empty()) {
+      ProfilerStart(profile_path.c_str());
+    }
+#endif
+
     auto t_est_start = std::chrono::high_resolution_clock::now();
     auto result = estimator.Estimate(input_mask, est_params);
     auto t_est_end = std::chrono::high_resolution_clock::now();
     double est_ms = std::chrono::duration<double, std::milli>(t_est_end - t_est_start).count();
     std::cout << "[Timing] Estimate (from main): " << est_ms << " ms\n";
+
+#ifdef ENABLE_PROFILER
+    if (!profile_path.empty()) {
+      ProfilerStop();
+    }
+#endif
 
     std::cout << "\n=== Result ===\n";
     std::cout << "Translation: tx=" << result.pose.tx << " ty=" << result.pose.ty

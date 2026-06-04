@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nlohmann-json3-dev \
     zlib1g-dev \
     libssl-dev \
+    google-perftools \
+    libgoogle-perftools-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -28,7 +30,7 @@ COPY CMakeLists.txt /src/CMakeLists.txt
 COPY mask-generation/ /src/mask-generation/
 COPY src/ /src/src/
 
-RUN mkdir -p /opt/build && cd /opt/build && cmake /src -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
+RUN mkdir -p /opt/build && cd /opt/build && cmake /src -DCMAKE_BUILD_TYPE=Release -DENABLE_PROFILER=ON && make -j$(nproc)
 
 WORKDIR /workspace
 
