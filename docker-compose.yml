@@ -60,7 +60,10 @@ services:
       "--cache", "/workspace/pose_cache.bin",
       "--image", "/workspace/input.png",
       "--output", "/workspace/result_cached.png",
-      "--rerun", "/workspace"
+      "--rerun", "/workspace",
+      "--max-candidates", "10",
+      "--fatol", "1e-4",
+      "--xatol", "1e-3"
     ]
 
   visualize-poses:
