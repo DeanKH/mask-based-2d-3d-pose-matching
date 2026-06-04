@@ -14,8 +14,9 @@ struct NelderMeadOptions {
   double gamma = 2.0;
   double rho = 0.5;
   double sigma = 0.5;
-  double xatol = 1e-6;
-  double fatol = 1e-8;
+  double xatol = 1e-3;
+  double fatol = 1e-4;
+  int patience = 10;
 };
 
 inline double NelderMead(std::function<double(const std::vector<double>&)> cost,
@@ -39,6 +40,9 @@ inline double NelderMead(std::function<double(const std::vector<double>&)> cost,
   std::vector<int> indices(num_vertices);
   std::iota(indices.begin(), indices.end(), 0);
 
+  double prev_best = std::numeric_limits<double>::max();
+  int stagnation = 0;
+
   for (int iter = 0; iter < max_iterations; ++iter) {
     std::sort(indices.begin(), indices.end(),
               [&](int a, int b) { return f_values[a] < f_values[b]; });
@@ -46,6 +50,15 @@ inline double NelderMead(std::function<double(const std::vector<double>&)> cost,
     double best_f = f_values[indices[0]];
     double worst_f = f_values[indices[num_vertices - 1]];
     double second_worst_f = f_values[indices[num_vertices - 2]];
+
+    if (prev_best - best_f < opts.fatol) {
+      stagnation++;
+    } else {
+      stagnation = 0;
+    }
+    prev_best = best_f;
+
+    if (stagnation >= opts.patience) break;
 
     if (worst_f - best_f < opts.fatol) {
       bool all_close = true;

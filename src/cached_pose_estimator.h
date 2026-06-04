@@ -11,6 +11,7 @@
 #include <opencv2/core.hpp>
 
 #include "cache_format.h"
+#include "nelder_mead.h"
 #include "pose_estimator.h"
 
 namespace pose_matching {
@@ -43,7 +44,8 @@ class CachedPoseEstimator {
       const EstimationParams& params);
 
   SearchResult RefinePose(const ScoredCandidate& initial, const cv::Mat& input_mask,
-                          const cv::Mat& dt_input, int max_iterations, int refine_index);
+                          const cv::Mat& dt_input, int max_iterations,
+                          const NelderMeadOptions& nm_opts, int refine_index);
 
   CacheData cache_;
   maskgen::CameraParams camera_params_;

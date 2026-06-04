@@ -11,6 +11,8 @@
 
 #include <opencv2/core.hpp>
 
+#include "nelder_mead.h"
+
 namespace pose_matching {
 
 class Visualizer;
@@ -48,6 +50,8 @@ struct EstimationParams {
   int local_depth = 3;
   double local_cone_half_angle_deg = 30.0;
   int top_k_local = 5;
+  int max_refine_candidates = 5;
+  NelderMeadOptions nm_options;
 };
 
 class PoseEstimator {
@@ -74,7 +78,8 @@ class PoseEstimator {
       const EstimationParams& params);
 
   SearchResult RefinePose(const ScoredCandidate& initial, const cv::Mat& input_mask,
-                          const cv::Mat& dt_input, int max_iterations, int refine_index);
+                          const cv::Mat& dt_input, int max_iterations,
+                          const NelderMeadOptions& nm_opts, int refine_index);
 
   maskgen::CameraParams camera_params_;
   maskgen::Mesh mesh_;

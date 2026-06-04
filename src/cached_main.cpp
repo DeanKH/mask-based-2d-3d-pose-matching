@@ -31,8 +31,12 @@ static void PrintUsage(const char* program) {
       << "  --image PATH         RGB image for visualization\n"
       << "  --output PATH        Output visualization path (default: result.png)\n"
       << "  --output-pose PATH   Output pose JSON path (default: pose_result.json)\n"
-      << "  --max-refine INT     Max refinement iterations (default: 200)\n"
-      << "  --rerun [DIR]        Enable rerun visualization, save to DIR (default: .)\n"
+       << "  --max-refine INT     Max refinement iterations (default: 200)\n"
+       << "  --max-candidates INT Max refine candidates (default: 5)\n"
+       << "  --fatol FLOAT        NM function tolerance (default: 1e-4)\n"
+       << "  --xatol FLOAT        NM parameter tolerance (default: 1e-3)\n"
+       << "  --patience INT       NM stagnation patience (default: 10)\n"
+       << "  --rerun [DIR]        Enable rerun visualization, save to DIR (default: .)\n"
       << "  -h, --help           Show this help\n";
 }
 
@@ -83,6 +87,18 @@ int main(int argc, char* argv[]) {
     } else if (arg == "--max-refine") {
       if (++i >= args.size()) return 1;
       est_params.nelder_mead_iterations = std::stoi(args[i]);
+    } else if (arg == "--max-candidates") {
+      if (++i >= args.size()) return 1;
+      est_params.max_refine_candidates = std::stoi(args[i]);
+    } else if (arg == "--fatol") {
+      if (++i >= args.size()) return 1;
+      est_params.nm_options.fatol = std::stod(args[i]);
+    } else if (arg == "--xatol") {
+      if (++i >= args.size()) return 1;
+      est_params.nm_options.xatol = std::stod(args[i]);
+    } else if (arg == "--patience") {
+      if (++i >= args.size()) return 1;
+      est_params.nm_options.patience = std::stoi(args[i]);
     } else if (arg == "--rerun") {
       if (i + 1 < args.size() && args[i + 1][0] != '-') {
         rerun_dir = args[++i];

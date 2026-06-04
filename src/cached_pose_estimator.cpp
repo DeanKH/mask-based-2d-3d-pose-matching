@@ -288,6 +288,7 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
                                               const cv::Mat& input_mask,
                                               const cv::Mat& dt_input,
                                               int max_iterations,
+                                              const NelderMeadOptions& nm_opts,
                                               int refine_index) {
   std::vector<double> x = {initial.pose.tx, initial.pose.ty, initial.pose.tz,
                            initial.pose.rx, initial.pose.ry, initial.pose.rz};
@@ -351,7 +352,7 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
       0.3, 0.3, 0.3,
   };
 
-  NelderMead(cost, x, initial_step, max_iterations);
+  NelderMead(cost, x, initial_step, max_iterations, nm_opts);
 
   Pose6D refined;
   refined.tx = x[0];
@@ -512,10 +513,10 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
   std::cout << "[Timing] CorrectPose eval: " << correct_ms << " ms\n";
 
   auto t_refine_start = std::chrono::high_resolution_clock::now();
-  int refine_count = std::min(static_cast<int>(refine_candidates.size()), 10);
+  int refine_count = std::min(static_cast<int>(refine_candidates.size()), params.max_refine_candidates);
   for (int i = 0; i < refine_count; ++i) {
     SearchResult refined =
-        RefinePose(refine_candidates[i], binary_mask, dt_input, params.nelder_mead_iterations, i);
+        RefinePose(refine_candidates[i], binary_mask, dt_input, params.nelder_mead_iterations, params.nm_options, i);
     if (refined.iou > best_result.iou) {
       best_result = refined;
     }
