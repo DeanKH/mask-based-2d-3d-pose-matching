@@ -58,6 +58,10 @@ class CachedPoseEstimator {
   CacheData cache_;
   std::vector<cv::Mat> decoded_coarse_masks_;
   std::vector<int> decoded_coarse_areas_;
+  std::vector<cv::Mat> decoded_coarse_masks_small_;
+  std::vector<int> decoded_coarse_areas_small_;
+  int small_w_ = 0;
+  int small_h_ = 0;
   maskgen::CameraParams camera_params_;
   maskgen::Mesh mesh_;
   std::unique_ptr<maskgen::MaskGenerator> generator_;

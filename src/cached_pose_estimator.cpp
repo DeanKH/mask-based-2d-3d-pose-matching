@@ -100,6 +100,23 @@ CachedPoseEstimator::CachedPoseEstimator(
   auto t_decode_end = std::chrono::high_resolution_clock::now();
   double decode_ms = std::chrono::duration<double, std::milli>(t_decode_end - t_decode_start).count();
   std::cout << "[Timing] Pre-decode coarse masks: " << decode_ms << " ms\n";
+
+  small_w_ = cache_.header.image_width / 4;
+  small_h_ = cache_.header.image_height / 4;
+  decoded_coarse_masks_small_.resize(n_coarse);
+  decoded_coarse_areas_small_.resize(n_coarse, 0);
+  auto t_small_start = std::chrono::high_resolution_clock::now();
+  #pragma omp parallel for schedule(dynamic)
+  for (int i = 0; i < n_coarse; ++i) {
+    if (decoded_coarse_areas_[i] > 0) {
+      cv::resize(decoded_coarse_masks_[i], decoded_coarse_masks_small_[i],
+                 cv::Size(small_w_, small_h_), 0, 0, cv::INTER_NEAREST);
+      decoded_coarse_areas_small_[i] = cv::countNonZero(decoded_coarse_masks_small_[i]);
+    }
+  }
+  auto t_small_end = std::chrono::high_resolution_clock::now();
+  double small_ms = std::chrono::duration<double, std::milli>(t_small_end - t_small_start).count();
+  std::cout << "[Timing] Downsample coarse masks (1/4): " << small_ms << " ms\n";
 }
 
 void CachedPoseEstimator::SetVisualizer(Visualizer* viz) { viz_ = viz; }
@@ -180,12 +197,40 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
   int input_count = cv::countNonZero(input_mask);
   int du = static_cast<int>(std::round(shift_u));
   int dv = static_cast<int>(std::round(shift_v));
-  std::vector<ScoredCandidate> all_candidates(n_entries);
+
+  // Phase 1: Low-res IoU for all entries
+  cv::Mat input_mask_small;
+  cv::resize(input_mask, input_mask_small, cv::Size(small_w_, small_h_), 0, 0, cv::INTER_NEAREST);
+  int input_count_small = cv::countNonZero(input_mask_small);
+  int du_small = static_cast<int>(std::round(static_cast<double>(du) / 4.0));
+  int dv_small = static_cast<int>(std::round(static_cast<double>(dv) / 4.0));
+
+  std::vector<int> lowres_idx(n_entries);
+  std::vector<double> lowres_iou(n_entries, -1.0);
 
   #pragma omp parallel for schedule(dynamic)
   for (int ei = 0; ei < n_entries; ++ei) {
-    if (decoded_coarse_areas_[ei] == 0) continue;
+    lowres_idx[ei] = ei;
+    if (decoded_coarse_areas_small_[ei] == 0) continue;
+    lowres_iou[ei] = ShiftedIoU(decoded_coarse_masks_small_[ei], input_mask_small,
+                                 du_small, dv_small,
+                                 decoded_coarse_areas_small_[ei], input_count_small);
+  }
 
+  std::sort(lowres_idx.begin(), lowres_idx.end(),
+            [&](int a, int b) { return lowres_iou[a] > lowres_iou[b]; });
+
+  // Phase 2: Full-res IoU for top N only
+  int n_fullres = std::min(std::max(params.top_k_coarse * 8, 64), n_entries);
+  std::vector<ScoredCandidate> fullres_results(n_fullres);
+
+  #pragma omp parallel for schedule(dynamic)
+  for (int fi = 0; fi < n_fullres; ++fi) {
+    int ei = lowres_idx[fi];
+    if (decoded_coarse_areas_[ei] == 0) {
+      fullres_results[fi] = {{}, -1.0, 1e6};
+      continue;
+    }
     double iou = ShiftedIoU(decoded_coarse_masks_[ei], input_mask,
                             du, dv, decoded_coarse_areas_[ei], input_count);
 
@@ -201,18 +246,19 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
     pose.ty = (v_cy - cache_.header.cy) * tz_total / cache_.header.fy - entry.crot_y;
     pose.tz = tz;
 
-    all_candidates[ei] = {pose, iou, 1.0 - iou};
+    fullres_results[fi] = {pose, iou, 1.0 - iou};
   }
 
   std::vector<ScoredCandidate> candidates;
-  candidates.reserve(n_entries);
-  for (int i = 0; i < n_entries; ++i) {
-    if (decoded_coarse_areas_[i] == 0) continue;
+  candidates.reserve(n_fullres);
+  for (int fi = 0; fi < n_fullres; ++fi) {
+    if (fullres_results[fi].iou < 0) continue;
     if (viz_) {
-      cv::Mat shifted = ShiftMask(decoded_coarse_masks_[i], shift_u, shift_v);
-      viz_->LogCandidate(i, all_candidates[i].pose, shifted, all_candidates[i].iou);
+      int ei = lowres_idx[fi];
+      cv::Mat shifted = ShiftMask(decoded_coarse_masks_[ei], shift_u, shift_v);
+      viz_->LogCandidate(fi, fullres_results[fi].pose, shifted, fullres_results[fi].iou);
     }
-    candidates.push_back(all_candidates[i]);
+    candidates.push_back(fullres_results[fi]);
   }
 
   std::sort(candidates.begin(), candidates.end(),
