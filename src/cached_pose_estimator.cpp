@@ -117,24 +117,6 @@ CachedPoseEstimator::CachedPoseEstimator(
   auto t_small_end = std::chrono::high_resolution_clock::now();
   double small_ms = std::chrono::duration<double, std::milli>(t_small_end - t_small_start).count();
   std::cout << "[Timing] Downsample coarse masks (1/4): " << small_ms << " ms\n";
-
-  int n_local = static_cast<int>(cache_.local_entries.size());
-  decoded_local_masks_small_.resize(n_local);
-  decoded_local_areas_small_.resize(n_local, 0);
-  auto t_local_start = std::chrono::high_resolution_clock::now();
-  #pragma omp parallel for schedule(dynamic)
-  for (int i = 0; i < n_local; ++i) {
-    if (cache_.local_entries[i].mask_size > 0) {
-      cv::Mat full = DecodeMask(cache_.local_entries[i].mask_offset,
-                                cache_.local_entries[i].mask_size);
-      cv::resize(full, decoded_local_masks_small_[i],
-                 cv::Size(small_w_, small_h_), 0, 0, cv::INTER_NEAREST);
-      decoded_local_areas_small_[i] = cv::countNonZero(decoded_local_masks_small_[i]);
-    }
-  }
-  auto t_local_end = std::chrono::high_resolution_clock::now();
-  double local_ms = std::chrono::duration<double, std::milli>(t_local_end - t_local_start).count();
-  std::cout << "[Timing] Decode+downsample local masks (1/4): " << local_ms << " ms\n";
 }
 
 void CachedPoseEstimator::SetVisualizer(Visualizer* viz) { viz_ = viz; }
@@ -347,50 +329,16 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedLocalSearch(
   std::vector<ScoredCandidate> all_local;
 
   int n_local = static_cast<int>(cache_.local_entries.size());
-  int input_count = static_cast<int>(area_input);
-  int du = static_cast<int>(std::round(shift_u));
-  int dv = static_cast<int>(std::round(shift_v));
-
-  // Phase 1: Low-res IoU for all entries
-  cv::Mat input_mask_small;
-  cv::resize(input_mask, input_mask_small, cv::Size(small_w_, small_h_), 0, 0, cv::INTER_NEAREST);
-  int input_count_small = cv::countNonZero(input_mask_small);
-  int du_small = static_cast<int>(std::round(static_cast<double>(du) / 4.0));
-  int dv_small = static_cast<int>(std::round(static_cast<double>(dv) / 4.0));
-
-  std::vector<double> lowres_iou(n_local, -1.0);
+  std::vector<ScoredCandidate> parallel_results(n_local);
+  std::vector<bool> valid(n_local, false);
 
   #pragma omp parallel for schedule(dynamic)
   for (int li = 0; li < n_local; ++li) {
-    if (decoded_local_areas_small_[li] == 0) continue;
-    if (needed_coarse_idx.find(cache_.local_entries[li].coarse_idx) == needed_coarse_idx.end())
-      continue;
-    lowres_iou[li] = ShiftedIoU(decoded_local_masks_small_[li], input_mask_small,
-                                 du_small, dv_small,
-                                 decoded_local_areas_small_[li], input_count_small);
-  }
-
-  std::vector<int> valid_idx;
-  valid_idx.reserve(n_local);
-  for (int li = 0; li < n_local; ++li) {
-    if (lowres_iou[li] >= 0) valid_idx.push_back(li);
-  }
-  std::sort(valid_idx.begin(), valid_idx.end(),
-            [&](int a, int b) { return lowres_iou[a] > lowres_iou[b]; });
-
-  std::cout << "[LocalSearch] Phase 1: " << valid_idx.size()
-            << " candidates filtered by low-res IoU\n";
-
-  // Phase 2: Full Chamfer+IoU for top N only
-  int n_full = std::min(std::max(params.top_k_local * 8, 32),
-                        static_cast<int>(valid_idx.size()));
-  std::vector<ScoredCandidate> fullres_results(n_full);
-  std::vector<bool> fullres_valid(n_full, false);
-
-  #pragma omp parallel for schedule(dynamic)
-  for (int fi = 0; fi < n_full; ++fi) {
-    int li = valid_idx[fi];
     const auto& local_entry = cache_.local_entries[li];
+    if (needed_coarse_idx.find(local_entry.coarse_idx) == needed_coarse_idx.end()) {
+      continue;
+    }
+    if (local_entry.mask_size == 0) continue;
 
     cv::Mat base_mask = DecodeMask(local_entry.mask_offset, local_entry.mask_size);
     cv::Mat shifted = ShiftMask(base_mask, shift_u, shift_v);
@@ -412,8 +360,7 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedLocalSearch(
                             : 0.0;
 
     double cost = chamfer + 0.5 * area_ratio;
-    double iou = ShiftedIoU(base_mask, input_mask, du, dv,
-                            static_cast<int>(area_rendered), input_count);
+    double iou = ComputeIoU(shifted, input_mask);
 
     double tz_total = local_entry.depth;
     double tz = tz_total - local_entry.crot_z;
@@ -426,12 +373,12 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedLocalSearch(
     pose.ty = (v_cy - cache_.header.cy) * tz_total / cache_.header.fy - local_entry.crot_y;
     pose.tz = tz;
 
-    fullres_results[fi] = {pose, iou, cost};
-    fullres_valid[fi] = true;
+    parallel_results[li] = {pose, iou, cost};
+    valid[li] = true;
   }
 
-  for (int fi = 0; fi < n_full; ++fi) {
-    if (fullres_valid[fi]) all_local.push_back(fullres_results[fi]);
+  for (int li = 0; li < n_local; ++li) {
+    if (valid[li]) all_local.push_back(parallel_results[li]);
   }
 
   std::sort(all_local.begin(), all_local.end(),

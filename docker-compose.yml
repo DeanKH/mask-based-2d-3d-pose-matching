@@ -53,7 +53,7 @@ services:
       - .:/workspace
     entrypoint: ["/opt/build/pose_matching_cached"]
     command: [
-      "--mask", "/workspace/mask.png",
+      "--mask", "/workspace/mask-4.png",
       "--camera", "/workspace/camera_info.json",
       "--model", "/workspace/mask-generation/model/pen.step",
       "--scale", "0.001",
