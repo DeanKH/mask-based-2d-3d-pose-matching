@@ -63,6 +63,7 @@ struct EstimationParams {
   int lm_max_iterations = 100;
   double lm_relative_tol = 1e-6;
   double lm_absolute_tol = 1e-6;
+  double early_termination_iou = 1.0;
 };
 
 class PoseEstimator {

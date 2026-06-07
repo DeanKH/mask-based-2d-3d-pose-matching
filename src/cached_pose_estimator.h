@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -48,7 +49,8 @@ class CachedPoseEstimator {
   SearchResult RefinePose(const ScoredCandidate& initial, const cv::Mat& input_mask,
                           const cv::Mat& dt_input, int max_iterations,
                           const NelderMeadOptions& nm_opts, int refine_index,
-                          maskgen::MaskGenerator* generator);
+                          maskgen::MaskGenerator* generator,
+                          const std::atomic<bool>* abort_flag = nullptr);
 
   CacheData cache_;
   maskgen::CameraParams camera_params_;

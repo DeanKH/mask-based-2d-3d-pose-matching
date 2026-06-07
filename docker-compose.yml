@@ -61,7 +61,7 @@ services:
       - .:/workspace
     entrypoint: ["/opt/build/pose_matching_cached"]
     command: [
-      "--mask", "/workspace/mask-4.png",
+      "--mask", "/workspace/mask.png",
       "--camera", "/workspace/camera_info.json",
       "--model", "/workspace/mask-generation/model/pen.step",
       "--scale", "0.001",
@@ -74,7 +74,8 @@ services:
       "--xatol", "1e-3",
       "--contour-points", "4000",
       "--lm-tolerance", "1e-9",
-      "--refine-method", "nelder-mead"
+      "--refine-method", "nelder-mead",
+      "--early-termination-iou", "0.90"
     ]
 
   visualize-poses:

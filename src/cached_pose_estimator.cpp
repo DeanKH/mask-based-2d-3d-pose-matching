@@ -298,7 +298,8 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
                                               int max_iterations,
                                               const NelderMeadOptions& nm_opts,
                                               int refine_index,
-                                              maskgen::MaskGenerator* generator) {
+                                              maskgen::MaskGenerator* generator,
+                                              const std::atomic<bool>* abort_flag) {
   std::vector<double> x = {initial.pose.tx, initial.pose.ty, initial.pose.tz,
                            initial.pose.rx, initial.pose.ry, initial.pose.rz};
 
@@ -310,7 +311,15 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
 
   int viz_iteration = 0;
   RefineProfiler prof;
+
+  std::vector<double> best_x = x;
+  double best_cost_val = std::numeric_limits<double>::max();
+
   auto cost = [&](const std::vector<double>& params) -> double {
+    if (abort_flag && abort_flag->load(std::memory_order_relaxed)) {
+      throw std::runtime_error("aborted");
+    }
+
     prof.cost_evals++;
     auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -374,6 +383,11 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
 
     double c = chamfer_val + 0.5 * area_ratio;
 
+    if (c < best_cost_val) {
+      best_cost_val = c;
+      best_x = params;
+    }
+
     if (viz_ && viz_iteration % 5 == 0) {
       ScopedTimer t(prof.viz_ms);
       double cur_iou = ComputeIoU(rendered, input_mask);
@@ -392,7 +406,17 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
       0.3, 0.3, 0.3,
   };
 
-  NelderMead(cost, x, initial_step, max_iterations, nm_opts);
+  bool aborted = false;
+  try {
+    NelderMead(cost, x, initial_step, max_iterations, nm_opts);
+  } catch (const std::runtime_error&) {
+    aborted = true;
+  }
+
+  if (aborted) {
+    x = best_x;
+    std::cout << "[EarlyTermination] RefinePose #" << refine_index << " aborted mid-optimization\n";
+  }
 
   prof.Print("RefinePose #" + std::to_string(refine_index));
 
@@ -569,15 +593,23 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
 
     std::vector<SearchResult> refine_results(refine_count);
     std::atomic<int> next_idx{0};
+    std::atomic<bool> early_stop{false};
 
     auto worker = [&](int thread_id) {
       while (true) {
+        if (early_stop.load(std::memory_order_relaxed)) break;
         int i = next_idx.fetch_add(1);
         if (i >= refine_count) break;
         refine_results[i] = RefinePose(refine_candidates[i], binary_mask, dt_input,
                                        params.nelder_mead_iterations, params.nm_options, i,
-                                       thread_generators[thread_id].get());
+                                       thread_generators[thread_id].get(), &early_stop);
         std::cout << "[Timing] RefinePose NM candidate #" << i << " iou " << refine_results[i].iou << "\n";
+        if (refine_results[i].iou >= params.early_termination_iou) {
+          std::cout << "[EarlyTermination] IoU " << refine_results[i].iou
+                    << " >= " << params.early_termination_iou
+                    << ", skipping remaining candidates\n";
+          early_stop.store(true, std::memory_order_relaxed);
+        }
       }
     };
 
@@ -630,6 +662,12 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
           camera_params_, mesh_, *generator_, lm_opts, i);
       if (refined.iou > best_result.iou) {
         best_result = refined;
+      }
+      if (refined.iou >= params.early_termination_iou) {
+        std::cout << "[EarlyTermination] IoU " << refined.iou
+                  << " >= " << params.early_termination_iou
+                  << ", skipping remaining candidates\n";
+        break;
       }
     }
     std::cout << "[Timing] RefinePose LM (x" << refine_count << ")\n";

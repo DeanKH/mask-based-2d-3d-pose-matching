@@ -43,7 +43,8 @@ static void PrintUsage(const char* program) {
        << "  --refine-method STR  Refine method: lm, gn, nelder-mead (default: lm)\n"
        << "  --contour-points INT Number of contour sample points (default: 1000)\n"
        << "  --lm-iterations INT  LM/GN max iterations (default: 100)\n"
-       << "  --lm-tolerance FLOAT LM/GN convergence tolerance (default: 1e-6)\n"
+        << "  --lm-tolerance FLOAT LM/GN convergence tolerance (default: 1e-6)\n"
+       << "  --early-termination-iou FLOAT  Stop refining remaining candidates when IoU exceeds this (default: disabled)\n"
        << "  --rerun [DIR]        Enable rerun visualization, save to DIR (default: .)\n"
        << "  --profile PATH       Write gperftools CPU profile to PATH\n"
        << "  -h, --help           Show this help\n";
@@ -99,6 +100,7 @@ int main(int argc, char* argv[]) {
       est_params.nelder_mead_iterations = std::stoi(args[i]);
     } else if (arg == "--max-candidates") {
       if (++i >= args.size()) return 1;
+      est_params.top_k_coarse = std::stoi(args[i]);
       est_params.max_refine_candidates = std::stoi(args[i]);
     } else if (arg == "--fatol") {
       if (++i >= args.size()) return 1;
@@ -126,6 +128,9 @@ int main(int argc, char* argv[]) {
       if (++i >= args.size()) return 1;
       est_params.lm_relative_tol = std::stod(args[i]);
       est_params.lm_absolute_tol = est_params.lm_relative_tol;
+    } else if (arg == "--early-termination-iou") {
+      if (++i >= args.size()) return 1;
+      est_params.early_termination_iou = std::stod(args[i]);
     } else if (arg == "--profile") {
       if (++i >= args.size()) return 1;
       profile_path = args[i];
