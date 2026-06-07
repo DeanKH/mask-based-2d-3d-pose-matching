@@ -577,6 +577,7 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
         refine_results[i] = RefinePose(refine_candidates[i], binary_mask, dt_input,
                                        params.nelder_mead_iterations, params.nm_options, i,
                                        thread_generators[thread_id].get());
+        std::cout << "[Timing] RefinePose NM candidate #" << i << " iou " << refine_results[i].iou << "\n";
       }
     };
 
