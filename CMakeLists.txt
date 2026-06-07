@@ -14,6 +14,7 @@ find_package(nlohmann_json 3.2.0 REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(OpenMP REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(rerun_sdk URL
@@ -101,6 +102,7 @@ target_link_libraries(pose_matching_cached
         ${OpenCV_LIBS}
         nlohmann_json::nlohmann_json
         rerun_sdk
+        OpenMP::OpenMP_CXX
 )
 
 if(GTSAM_FOUND)

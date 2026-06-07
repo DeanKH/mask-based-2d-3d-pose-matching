@@ -108,20 +108,14 @@ cv::Mat CachedPoseEstimator::ShiftMask(const cv::Mat& mask, double dx, double dy
 }
 
 double CachedPoseEstimator::ComputeIoU(const cv::Mat& a, const cv::Mat& b) const {
-  int a_count = 0, b_count = 0, ab_count = 0;
-  for (int r = 0; r < a.rows; ++r) {
-    const auto* pa = a.ptr<uint8_t>(r);
-    const auto* pb = b.ptr<uint8_t>(r);
-    for (int c = 0; c < a.cols; ++c) {
-      bool va = pa[c] > 127;
-      bool vb = pb[c] > 127;
-      a_count += va;
-      b_count += vb;
-      ab_count += (va && vb);
-    }
-  }
-  if (a_count + b_count - ab_count == 0) return 0.0;
-  return static_cast<double>(ab_count) / (a_count + b_count - ab_count);
+  cv::Mat ab;
+  cv::bitwise_and(a, b, ab);
+  int ab_count = cv::countNonZero(ab);
+  int a_count = cv::countNonZero(a);
+  int b_count = cv::countNonZero(b);
+  int denom = a_count + b_count - ab_count;
+  if (denom == 0) return 0.0;
+  return static_cast<double>(ab_count) / denom;
 }
 
 std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
@@ -136,19 +130,16 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
   double shift_u = u_cx - cache_.header.cx;
   double shift_v = v_cy - cache_.header.cy;
 
-  std::vector<ScoredCandidate> candidates;
-  candidates.reserve(cache_.coarse_entries.size());
+  int n_entries = static_cast<int>(cache_.coarse_entries.size());
+  std::vector<ScoredCandidate> all_candidates(n_entries);
 
-  int candidate_index = 0;
-  for (const auto& entry : cache_.coarse_entries) {
-    if (entry.mask_size == 0) {
-      candidate_index++;
-      continue;
-    }
+  #pragma omp parallel for schedule(dynamic)
+  for (int ei = 0; ei < n_entries; ++ei) {
+    const auto& entry = cache_.coarse_entries[ei];
+    if (entry.mask_size == 0) continue;
 
     cv::Mat base_mask = DecodeMask(entry.mask_offset, entry.mask_size);
     cv::Mat shifted = ShiftMask(base_mask, shift_u, shift_v);
-
     double iou = ComputeIoU(shifted, input_mask);
 
     double tz_total = entry.depth;
@@ -162,12 +153,20 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
     pose.ty = (v_cy - cache_.header.cy) * tz_total / cache_.header.fy - entry.crot_y;
     pose.tz = tz;
 
-    if (viz_) {
-      viz_->LogCandidate(candidate_index, pose, shifted, iou);
-    }
-    candidate_index++;
+    all_candidates[ei] = {pose, iou, 1.0 - iou};
+  }
 
-    candidates.push_back({pose, iou, 1.0 - iou});
+  std::vector<ScoredCandidate> candidates;
+  candidates.reserve(n_entries);
+  for (int i = 0; i < n_entries; ++i) {
+    if (cache_.coarse_entries[i].mask_size == 0) continue;
+    if (viz_) {
+      cv::Mat base_mask = DecodeMask(cache_.coarse_entries[i].mask_offset,
+                                     cache_.coarse_entries[i].mask_size);
+      cv::Mat shifted = ShiftMask(base_mask, shift_u, shift_v);
+      viz_->LogCandidate(i, all_candidates[i].pose, shifted, all_candidates[i].iou);
+    }
+    candidates.push_back(all_candidates[i]);
   }
 
   std::sort(candidates.begin(), candidates.end(),
@@ -237,11 +236,16 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedLocalSearch(
 
   std::vector<ScoredCandidate> all_local;
 
-  for (const auto& local_entry : cache_.local_entries) {
+  int n_local = static_cast<int>(cache_.local_entries.size());
+  std::vector<ScoredCandidate> parallel_results(n_local);
+  std::vector<bool> valid(n_local, false);
+
+  #pragma omp parallel for schedule(dynamic)
+  for (int li = 0; li < n_local; ++li) {
+    const auto& local_entry = cache_.local_entries[li];
     if (needed_coarse_idx.find(local_entry.coarse_idx) == needed_coarse_idx.end()) {
       continue;
     }
-
     if (local_entry.mask_size == 0) continue;
 
     cv::Mat base_mask = DecodeMask(local_entry.mask_offset, local_entry.mask_size);
@@ -277,7 +281,12 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedLocalSearch(
     pose.ty = (v_cy - cache_.header.cy) * tz_total / cache_.header.fy - local_entry.crot_y;
     pose.tz = tz;
 
-    all_local.push_back({pose, iou, cost});
+    parallel_results[li] = {pose, iou, cost};
+    valid[li] = true;
+  }
+
+  for (int li = 0; li < n_local; ++li) {
+    if (valid[li]) all_local.push_back(parallel_results[li]);
   }
 
   std::sort(all_local.begin(), all_local.end(),
