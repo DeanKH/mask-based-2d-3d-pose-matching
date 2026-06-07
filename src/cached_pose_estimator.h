@@ -37,6 +37,9 @@ class CachedPoseEstimator {
 
   double ComputeIoU(const cv::Mat& a, const cv::Mat& b) const;
 
+  double ShiftedIoU(const cv::Mat& base, const cv::Mat& input,
+                    int du, int dv, int base_count, int input_count) const;
+
   std::vector<ScoredCandidate> CachedCoarseSearch(const cv::Mat& input_mask,
                                                    const cv::Mat& dt_input,
                                                    const EstimationParams& params);
@@ -53,6 +56,8 @@ class CachedPoseEstimator {
                           const std::atomic<bool>* abort_flag = nullptr);
 
   CacheData cache_;
+  std::vector<cv::Mat> decoded_coarse_masks_;
+  std::vector<int> decoded_coarse_areas_;
   maskgen::CameraParams camera_params_;
   maskgen::Mesh mesh_;
   std::unique_ptr<maskgen::MaskGenerator> generator_;

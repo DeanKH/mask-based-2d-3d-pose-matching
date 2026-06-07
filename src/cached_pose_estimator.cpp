@@ -84,6 +84,22 @@ CachedPoseEstimator::CachedPoseEstimator(
   camera_params_.up_z = 0;
 
   generator_ = std::make_unique<maskgen::MaskGenerator>(camera_params_);
+
+  auto t_decode_start = std::chrono::high_resolution_clock::now();
+  int n_coarse = static_cast<int>(cache_.coarse_entries.size());
+  decoded_coarse_masks_.resize(n_coarse);
+  decoded_coarse_areas_.resize(n_coarse, 0);
+  #pragma omp parallel for schedule(dynamic)
+  for (int i = 0; i < n_coarse; ++i) {
+    if (cache_.coarse_entries[i].mask_size > 0) {
+      decoded_coarse_masks_[i] = DecodeMask(cache_.coarse_entries[i].mask_offset,
+                                            cache_.coarse_entries[i].mask_size);
+      decoded_coarse_areas_[i] = cv::countNonZero(decoded_coarse_masks_[i]);
+    }
+  }
+  auto t_decode_end = std::chrono::high_resolution_clock::now();
+  double decode_ms = std::chrono::duration<double, std::milli>(t_decode_end - t_decode_start).count();
+  std::cout << "[Timing] Pre-decode coarse masks: " << decode_ms << " ms\n";
 }
 
 void CachedPoseEstimator::SetVisualizer(Visualizer* viz) { viz_ = viz; }
@@ -118,6 +134,36 @@ double CachedPoseEstimator::ComputeIoU(const cv::Mat& a, const cv::Mat& b) const
   return static_cast<double>(ab_count) / denom;
 }
 
+double CachedPoseEstimator::ShiftedIoU(const cv::Mat& base, const cv::Mat& input,
+                                       int du, int dv,
+                                       int base_count, int input_count) const {
+  int h = input.rows;
+  int w = input.cols;
+
+  int b_r0 = std::max(0, -dv);
+  int b_r1 = std::min(h, h - dv);
+  int b_c0 = std::max(0, -du);
+  int b_c1 = std::min(w, w - du);
+
+  int overlap_h = b_r1 - b_r0;
+  int overlap_w = b_c1 - b_c0;
+  if (overlap_h <= 0 || overlap_w <= 0) return 0.0;
+
+  int i_r0 = b_r0 + dv;
+  int i_c0 = b_c0 + du;
+
+  cv::Rect base_rect(b_c0, b_r0, overlap_w, overlap_h);
+  cv::Rect input_rect(i_c0, i_r0, overlap_w, overlap_h);
+
+  cv::Mat ab;
+  cv::bitwise_and(base(base_rect), input(input_rect), ab);
+  int intersection = cv::countNonZero(ab);
+
+  int denom = base_count + input_count - intersection;
+  if (denom == 0) return 0.0;
+  return static_cast<double>(intersection) / denom;
+}
+
 std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
     const cv::Mat& input_mask, const cv::Mat& dt_input,
     const EstimationParams& params) {
@@ -131,17 +177,19 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
   double shift_v = v_cy - cache_.header.cy;
 
   int n_entries = static_cast<int>(cache_.coarse_entries.size());
+  int input_count = cv::countNonZero(input_mask);
+  int du = static_cast<int>(std::round(shift_u));
+  int dv = static_cast<int>(std::round(shift_v));
   std::vector<ScoredCandidate> all_candidates(n_entries);
 
   #pragma omp parallel for schedule(dynamic)
   for (int ei = 0; ei < n_entries; ++ei) {
+    if (decoded_coarse_areas_[ei] == 0) continue;
+
+    double iou = ShiftedIoU(decoded_coarse_masks_[ei], input_mask,
+                            du, dv, decoded_coarse_areas_[ei], input_count);
+
     const auto& entry = cache_.coarse_entries[ei];
-    if (entry.mask_size == 0) continue;
-
-    cv::Mat base_mask = DecodeMask(entry.mask_offset, entry.mask_size);
-    cv::Mat shifted = ShiftMask(base_mask, shift_u, shift_v);
-    double iou = ComputeIoU(shifted, input_mask);
-
     double tz_total = entry.depth;
     double tz = tz_total - entry.crot_z;
 
@@ -159,11 +207,9 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
   std::vector<ScoredCandidate> candidates;
   candidates.reserve(n_entries);
   for (int i = 0; i < n_entries; ++i) {
-    if (cache_.coarse_entries[i].mask_size == 0) continue;
+    if (decoded_coarse_areas_[i] == 0) continue;
     if (viz_) {
-      cv::Mat base_mask = DecodeMask(cache_.coarse_entries[i].mask_offset,
-                                     cache_.coarse_entries[i].mask_size);
-      cv::Mat shifted = ShiftMask(base_mask, shift_u, shift_v);
+      cv::Mat shifted = ShiftMask(decoded_coarse_masks_[i], shift_u, shift_v);
       viz_->LogCandidate(i, all_candidates[i].pose, shifted, all_candidates[i].iou);
     }
     candidates.push_back(all_candidates[i]);
