@@ -3,12 +3,14 @@
 #include <chrono>
 #include <cmath>
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <numeric>
 #include <set>
+#include <thread>
 
 #include "profiling.h"
 
@@ -295,7 +297,8 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
                                               const cv::Mat& dt_input,
                                               int max_iterations,
                                               const NelderMeadOptions& nm_opts,
-                                              int refine_index) {
+                                              int refine_index,
+                                              maskgen::MaskGenerator* generator) {
   std::vector<double> x = {initial.pose.tx, initial.pose.ty, initial.pose.tz,
                            initial.pose.rx, initial.pose.ry, initial.pose.rz};
 
@@ -336,7 +339,7 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
     cv::Mat rendered;
     {
       ScopedTimer t(prof.generate_ms);
-      rendered = generator_->Generate(mesh_, mp);
+      rendered = generator->Generate(mesh_, mp);
     }
 
     cv::Mat diff;
@@ -408,7 +411,7 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
   mp.rx = refined.rx;
   mp.ry = refined.ry;
   mp.rz = refined.rz;
-  cv::Mat final_rendered = generator_->Generate(mesh_, mp);
+  cv::Mat final_rendered = generator->Generate(mesh_, mp);
   double final_iou = ComputeIoU(final_rendered, input_mask);
 
   return {refined, final_iou};
@@ -555,14 +558,45 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
   int refine_count = std::min(static_cast<int>(refine_candidates.size()), params.max_refine_candidates);
 
   if (params.refine_method == RefineMethod::NelderMead) {
+    const unsigned int hw_threads = std::thread::hardware_concurrency();
+    const int num_threads = std::max(1, static_cast<int>(hw_threads));
+    const int actual_threads = std::min(num_threads, refine_count);
+
+    std::vector<std::unique_ptr<maskgen::MaskGenerator>> thread_generators(actual_threads);
+    for (int t = 0; t < actual_threads; ++t) {
+      thread_generators[t] = std::make_unique<maskgen::MaskGenerator>(camera_params_);
+    }
+
+    std::vector<SearchResult> refine_results(refine_count);
+    std::atomic<int> next_idx{0};
+
+    auto worker = [&](int thread_id) {
+      while (true) {
+        int i = next_idx.fetch_add(1);
+        if (i >= refine_count) break;
+        refine_results[i] = RefinePose(refine_candidates[i], binary_mask, dt_input,
+                                       params.nelder_mead_iterations, params.nm_options, i,
+                                       thread_generators[thread_id].get());
+      }
+    };
+
+    std::vector<std::thread> threads;
+    threads.reserve(actual_threads);
+    for (int t = 0; t < actual_threads; ++t) {
+      threads.emplace_back(worker, t);
+    }
+    for (auto& th : threads) {
+      th.join();
+    }
+
+    size_t best_idx = 0;
     for (int i = 0; i < refine_count; ++i) {
-      SearchResult refined =
-          RefinePose(refine_candidates[i], binary_mask, dt_input, params.nelder_mead_iterations, params.nm_options, i);
-      if (refined.iou > best_result.iou) {
-        best_result = refined;
+      if (refine_results[i].iou > best_result.iou) {
+        best_idx = i;
+        best_result = refine_results[i];
       }
     }
-    std::cout << "[Timing] RefinePose NM (x" << refine_count << ")\n";
+    std::cout << "[Timing] RefinePose NM (x" << refine_count << ", " << actual_threads << " threads), best_idx=" << best_idx << "\n";
   } else {
     LMOptions lm_opts;
     lm_opts.optimizer = (params.refine_method == RefineMethod::GaussNewton)

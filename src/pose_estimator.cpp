@@ -3,12 +3,14 @@
 #include <chrono>
 #include <cmath>
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <numeric>
 #include <set>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -294,7 +296,8 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
                                        const cv::Mat& dt_input,
                                        int max_iterations,
                                        const NelderMeadOptions& nm_opts,
-                                       int refine_index) {
+                                       int refine_index,
+                                       maskgen::MaskGenerator* generator) {
   std::vector<double> x = {initial.pose.tx, initial.pose.ty, initial.pose.tz,
                            initial.pose.rx, initial.pose.ry, initial.pose.rz};
 
@@ -327,7 +330,14 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
     cv::Mat rendered;
     {
       ScopedTimer t(prof.generate_ms);
-      rendered = RenderPose(p);
+      maskgen::MeshPose mp;
+      mp.tx = p.tx;
+      mp.ty = p.ty;
+      mp.tz = p.tz;
+      mp.rx = p.rx;
+      mp.ry = p.ry;
+      mp.rz = p.rz;
+      rendered = generator->Generate(mesh_, mp);
     }
 
     cv::Mat diff;
@@ -392,7 +402,14 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
   refined.ry = x[4];
   refined.rz = x[5];
 
-  cv::Mat final_rendered = RenderPose(refined);
+  maskgen::MeshPose refined_mp;
+  refined_mp.tx = refined.tx;
+  refined_mp.ty = refined.ty;
+  refined_mp.tz = refined.tz;
+  refined_mp.rx = refined.rx;
+  refined_mp.ry = refined.ry;
+  refined_mp.rz = refined.rz;
+  cv::Mat final_rendered = generator->Generate(mesh_, refined_mp);
   double final_iou = ComputeIoU(final_rendered, input_mask);
 
   return {refined, final_iou};
@@ -677,16 +694,47 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
 
   auto t_refine_start = std::chrono::high_resolution_clock::now();
   int refine_count = std::min(static_cast<int>(refine_candidates.size()), params.max_refine_candidates);
+
+  const unsigned int hw_threads = std::thread::hardware_concurrency();
+  const int num_threads = std::max(1, static_cast<int>(hw_threads) / 2);
+  const int actual_threads = std::min(num_threads, refine_count);
+
+  std::vector<std::unique_ptr<maskgen::MaskGenerator>> thread_generators(actual_threads);
+  for (int t = 0; t < actual_threads; ++t) {
+    thread_generators[t] = std::make_unique<maskgen::MaskGenerator>(camera_params_);
+  }
+
+  std::vector<SearchResult> refine_results(refine_count);
+  std::atomic<int> next_idx{0};
+
+  auto worker = [&](int thread_id) {
+    while (true) {
+      int i = next_idx.fetch_add(1);
+      if (i >= refine_count) break;
+      refine_results[i] = RefinePose(refine_candidates[i], binary_mask, dt_input,
+                                     params.nelder_mead_iterations, params.nm_options, i,
+                                     thread_generators[thread_id].get());
+    }
+  };
+
+  std::vector<std::thread> threads;
+  threads.reserve(actual_threads);
+  for (int t = 0; t < actual_threads; ++t) {
+    threads.emplace_back(worker, t);
+  }
+  for (auto& th : threads) {
+    th.join();
+  }
+
   for (int i = 0; i < refine_count; ++i) {
-    SearchResult refined =
-        RefinePose(refine_candidates[i], binary_mask, dt_input, params.nelder_mead_iterations, params.nm_options, i);
-    if (refined.iou > best_result.iou) {
-      best_result = refined;
+    if (refine_results[i].iou > best_result.iou) {
+      best_result = refine_results[i];
     }
   }
   auto t_refine_end = std::chrono::high_resolution_clock::now();
   double refine_ms = std::chrono::duration<double, std::milli>(t_refine_end - t_refine_start).count();
-  std::cout << "[Timing] RefinePose (x" << refine_count << "): " << refine_ms << " ms\n";
+  std::cout << "[Timing] RefinePose (x" << refine_count << ", " << actual_threads << " threads): "
+            << refine_ms << " ms\n";
 
   if (viz_) {
     cv::Mat final_rendered = RenderPose(best_result.pose);

@@ -42,7 +42,15 @@ services:
       "--camera", "/workspace/camera_info.json",
       "--model", "/workspace/mask-generation/model/pen.step",
       "--scale", "0.001",
-      "--output", "/workspace/pose_cache.bin"
+      "--output", "/workspace/pose_cache.bin",
+      "--directions", "96",
+      "--in-plane", "8",
+      "--depth-steps", "10",
+      "--local-directions", "12",
+      "--local-in-plane", "12",
+      "--local-depth", "5",
+      "--local-cone-angle", "30",
+      "--threads", "8"
     ]
 
   pose-matching-cached:
@@ -53,7 +61,7 @@ services:
       - .:/workspace
     entrypoint: ["/opt/build/pose_matching_cached"]
     command: [
-      "--mask", "/workspace/mask.png",
+      "--mask", "/workspace/mask-4.png",
       "--camera", "/workspace/camera_info.json",
       "--model", "/workspace/mask-generation/model/pen.step",
       "--scale", "0.001",
@@ -63,7 +71,10 @@ services:
       "--rerun", "/workspace",
       "--max-candidates", "10",
       "--fatol", "1e-4",
-      "--xatol", "1e-3"
+      "--xatol", "1e-3",
+      "--contour-points", "4000",
+      "--lm-tolerance", "1e-9",
+      "--refine-method", "nelder-mead"
     ]
 
   visualize-poses:
