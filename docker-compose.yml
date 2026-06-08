@@ -40,9 +40,14 @@ services:
     entrypoint: ["/opt/build/pose_cache_builder"]
     command: [
       "--camera", "/workspace/camera_info.json",
-      "--model", "/workspace/mask-generation/model/pen.step",
+      "--model", "/workspace/mask-generation/model/ad.step",
       "--scale", "0.001",
-      "--output", "/workspace/pose_cache.bin",
+      "--output", "/workspace/cache/ad.bin",
+      "--depth-min", "0.10",
+      "--depth-max", "0.30",
+      "--depth-steps", "10",
+      "--local-depth", "3",
+      "--threads", "14"
     ]
 
   pose-matching-cached:
@@ -52,22 +57,24 @@ services:
     volumes:
       - .:/workspace
     entrypoint: ["/opt/build/pose_matching_cached"]
+    environment:
+      - OBJECT_NAME=${OBJECT_NAME:-pen}
     command: [
-      "--mask", "/workspace/mask.png",
+      "--model", "/workspace/mask-generation/model/${OBJECT_NAME:-pen}.step",
+      "--image", "/workspace/input/${OBJECT_NAME:-pen}/rgb.png",
+      "--mask", "/workspace/input/${OBJECT_NAME:-pen}/mask.png",
       "--camera", "/workspace/camera_info.json",
-      "--model", "/workspace/mask-generation/model/pen.step",
       "--scale", "0.001",
-      "--cache", "/workspace/pose_cache.bin",
-      "--image", "/workspace/input.png",
-      "--output", "/workspace/result_cached.png",
-      "--rerun", "/workspace",
-      "--max-candidates", "10",
+      "--cache", "/workspace/cache/${OBJECT_NAME:-pen}.bin",
+      "--output", "/workspace/result/${OBJECT_NAME:-pen}/result_cached.png",
+      "--rerun", "/workspace/record",
+      "--max-candidates", "30",
       "--fatol", "1e-4",
       "--xatol", "1e-3",
       "--contour-points", "4000",
       "--lm-tolerance", "1e-9",
       "--refine-method", "nelder-mead",
-      "--early-termination-iou", "0.90"
+      "--early-termination-iou", "0.95"
     ]
 
   visualize-poses:
