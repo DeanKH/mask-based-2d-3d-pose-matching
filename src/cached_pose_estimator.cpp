@@ -6,10 +6,13 @@
 #include <atomic>
 #include <cfloat>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <numeric>
 #include <set>
+#include <sstream>
 #include <thread>
 
 #include "profiling.h"
@@ -22,6 +25,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include "nelder_mead.h"
 #include "visualizer.h"
@@ -735,6 +739,37 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
 
   auto t_refine_start = std::chrono::high_resolution_clock::now();
   int refine_count = std::min(static_cast<int>(refine_candidates.size()), params.max_refine_candidates);
+
+  if (!params.int_mask_dir.empty()) {
+    std::filesystem::create_directories(params.int_mask_dir);
+    for (int i = 0; i < refine_count; ++i) {
+      const auto& cand = refine_candidates[i];
+      maskgen::MeshPose mp;
+      mp.tx = cand.pose.tx;
+      mp.ty = cand.pose.ty;
+      mp.tz = cand.pose.tz;
+      mp.rx = cand.pose.rx;
+      mp.ry = cand.pose.ry;
+      mp.rz = cand.pose.rz;
+      cv::Mat rendered = generator_->GeneratePose(mp);
+
+      cv::Mat overlay(binary_mask.rows, binary_mask.cols, CV_8UC3, cv::Scalar(0, 0, 0));
+      cv::Mat input_color;
+      cv::cvtColor(binary_mask, input_color, cv::COLOR_GRAY2BGR);
+      input_color.setTo(cv::Scalar(0, 0, 255), binary_mask);
+      cv::Mat render_color;
+      cv::cvtColor(rendered, render_color, cv::COLOR_GRAY2BGR);
+      render_color.setTo(cv::Scalar(0, 255, 0), rendered);
+      cv::add(input_color, render_color, overlay);
+
+      std::ostringstream path;
+      path << params.int_mask_dir << "/candidate_" << std::setw(2) << std::setfill('0') << i
+           << "_iou" << std::fixed << std::setprecision(3) << cand.iou
+           << ".png";
+      cv::imwrite(path.str(), overlay);
+      std::cout << "[IntMask] Saved: " << path.str() << "\n";
+    }
+  }
 
   if (params.refine_method == RefineMethod::NelderMead) {
     const unsigned int hw_threads = std::thread::hardware_concurrency();

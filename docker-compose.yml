@@ -74,7 +74,8 @@ services:
       "--contour-points", "4000",
       "--lm-tolerance", "1e-9",
       "--refine-method", "nelder-mead",
-      "--early-termination-iou", "0.95"
+      "--early-termination-iou", "0.95",
+      "--int-mask", "/workspace/int"
     ]
 
   visualize-poses:

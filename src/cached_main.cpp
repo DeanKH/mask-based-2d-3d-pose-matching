@@ -44,7 +44,8 @@ static void PrintUsage(const char* program) {
        << "  --contour-points INT Number of contour sample points (default: 1000)\n"
        << "  --lm-iterations INT  LM/GN max iterations (default: 100)\n"
         << "  --lm-tolerance FLOAT LM/GN convergence tolerance (default: 1e-6)\n"
-       << "  --early-termination-iou FLOAT  Stop refining remaining candidates when IoU exceeds this (default: disabled)\n"
+        << "  --early-termination-iou FLOAT  Stop refining remaining candidates when IoU exceeds this (default: disabled)\n"
+       << "  --int-mask DIR       Save candidate overlay images to DIR (red=input, green=rendered)\n"
        << "  --rerun [DIR]        Enable rerun visualization, save to DIR (default: .)\n"
        << "  --profile PATH       Write gperftools CPU profile to PATH\n"
        << "  -h, --help           Show this help\n";
@@ -131,6 +132,9 @@ int main(int argc, char* argv[]) {
     } else if (arg == "--early-termination-iou") {
       if (++i >= args.size()) return 1;
       est_params.early_termination_iou = std::stod(args[i]);
+    } else if (arg == "--int-mask") {
+      if (++i >= args.size()) return 1;
+      est_params.int_mask_dir = args[i];
     } else if (arg == "--profile") {
       if (++i >= args.size()) return 1;
       profile_path = args[i];

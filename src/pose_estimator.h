@@ -64,6 +64,7 @@ struct EstimationParams {
   double lm_relative_tol = 1e-6;
   double lm_absolute_tol = 1e-6;
   double early_termination_iou = 1.0;
+  std::string int_mask_dir;
 };
 
 class PoseEstimator {
