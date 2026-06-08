@@ -86,7 +86,7 @@ std::vector<glm::vec3> SampleContour3D(
     const maskgen::CameraParams& camera_params,
     maskgen::MaskGenerator& generator,
     int num_points) {
-  cv::Mat rendered = generator.Generate(mesh, initial_pose);
+  cv::Mat rendered = generator.GeneratePose(initial_pose);
 
   cv::Mat binary;
   cv::threshold(rendered, binary, 127, 255, cv::THRESH_BINARY);

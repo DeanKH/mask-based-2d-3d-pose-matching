@@ -84,6 +84,7 @@ CachedPoseEstimator::CachedPoseEstimator(
   camera_params_.up_z = 0;
 
   generator_ = std::make_unique<maskgen::MaskGenerator>(camera_params_);
+  generator_->SetMesh(mesh_);
 
   auto t_decode_start = std::chrono::high_resolution_clock::now();
   int n_coarse = static_cast<int>(cache_.coarse_entries.size());
@@ -502,7 +503,7 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
     cv::Mat rendered;
     {
       ScopedTimer t(prof.generate_ms);
-      rendered = generator->Generate(mesh_, mp);
+      rendered = generator->GeneratePose(mp);
     }
 
     cv::Mat diff;
@@ -589,7 +590,7 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
   mp.rx = refined.rx;
   mp.ry = refined.ry;
   mp.rz = refined.rz;
-  cv::Mat final_rendered = generator->Generate(mesh_, mp);
+  cv::Mat final_rendered = generator->GeneratePose(mp);
   double final_iou = ComputeIoU(final_rendered, input_mask);
 
   return {refined, final_iou};
@@ -703,7 +704,7 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
       mp.rx = correct_pose.rx;
       mp.ry = correct_pose.ry;
       mp.rz = correct_pose.rz;
-      cv::Mat correct_rendered = generator_->Generate(mesh_, mp);
+      cv::Mat correct_rendered = generator_->GeneratePose(mp);
       double correct_iou = ComputeIoU(correct_rendered, binary_mask);
 
       double area_input = cv::countNonZero(binary_mask);
@@ -743,6 +744,7 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
     std::vector<std::unique_ptr<maskgen::MaskGenerator>> thread_generators(actual_threads);
     for (int t = 0; t < actual_threads; ++t) {
       thread_generators[t] = std::make_unique<maskgen::MaskGenerator>(camera_params_);
+      thread_generators[t]->SetMesh(mesh_);
     }
 
     std::vector<SearchResult> refine_results(refine_count);
@@ -838,7 +840,7 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
     mp.rx = best_result.pose.rx;
     mp.ry = best_result.pose.ry;
     mp.rz = best_result.pose.rz;
-    cv::Mat result_rendered = generator_->Generate(mesh_, mp);
+    cv::Mat result_rendered = generator_->GeneratePose(mp);
     double area_input = cv::countNonZero(binary_mask);
     double scale_factor = area_input > 0 ? 1.0 / std::sqrt(area_input) : 1.0;
     cv::Mat dt_input_f;
@@ -868,7 +870,7 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
     mp.rx = best_result.pose.rx;
     mp.ry = best_result.pose.ry;
     mp.rz = best_result.pose.rz;
-    cv::Mat final_rendered = generator_->Generate(mesh_, mp);
+    cv::Mat final_rendered = generator_->GeneratePose(mp);
     viz_->LogFinalResult(best_result.pose, final_rendered, best_result.iou);
   }
 
