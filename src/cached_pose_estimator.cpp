@@ -130,36 +130,217 @@ double ComputeZernikeDistance(const cv::Mat& a, const cv::Mat& b, int max_order 
   return std::sqrt(dist);
 }
 
-}  // namespace
-
-double ComputeCentroidAlignedIoU(const cv::Mat& input, const cv::Mat& rendered) {
-  cv::Moments mi = cv::moments(input, true);
-  cv::Moments mr = cv::moments(rendered, true);
-  if (mi.m00 == 0 || mr.m00 == 0) return 0.0;
+cv::Mat ShiftMaskByCentroid(const cv::Mat& reference, const cv::Mat& mask) {
+  cv::Moments mi = cv::moments(reference, true);
+  cv::Moments mr = cv::moments(mask, true);
+  if (mi.m00 == 0 || mr.m00 == 0) return cv::Mat::zeros(mask.rows, mask.cols, mask.type());
   int du = static_cast<int>(std::round(mi.m10 / mi.m00 - mr.m10 / mr.m00));
   int dv = static_cast<int>(std::round(mi.m01 / mi.m00 - mr.m01 / mr.m00));
+  cv::Mat M = (cv::Mat_<double>(2, 3) << 1, 0, du, 0, 1, dv);
+  cv::Mat shifted;
+  cv::warpAffine(mask, shifted, M, mask.size(), cv::INTER_NEAREST, cv::BORDER_CONSTANT, 0);
+  return shifted;
+}
 
-  int h = input.rows, w = input.cols;
-  int r_r0 = std::max(0, dv), r_r1 = std::min(h, h + dv);
-  int r_c0 = std::max(0, du), r_c1 = std::min(w, w + du);
-  int i_r0 = r_r0 - dv, i_c0 = r_c0 - du;
-  int oh = r_r1 - r_r0, ow = r_c1 - r_c0;
-  if (oh <= 0 || ow <= 0) return 0.0;
-
-  cv::Rect render_rect(r_c0, r_r0, ow, oh);
-  cv::Rect input_rect(i_c0, i_r0, ow, oh);
-
-  cv::Mat shifted_rendered = cv::Mat::zeros(h, w, CV_8UC1);
-  rendered(render_rect).copyTo(shifted_rendered(input_rect));
-
+double ComputeMaskIoU(const cv::Mat& a, const cv::Mat& b) {
   cv::Mat ab;
-  cv::bitwise_and(input, shifted_rendered, ab);
+  cv::bitwise_and(a, b, ab);
   int ab_count = cv::countNonZero(ab);
-  int a_count = cv::countNonZero(input);
-  int b_count = cv::countNonZero(shifted_rendered);
+  int a_count = cv::countNonZero(a);
+  int b_count = cv::countNonZero(b);
   int denom = a_count + b_count - ab_count;
   return denom > 0 ? static_cast<double>(ab_count) / denom : 0.0;
 }
+
+double ComputeCentroidAlignedIoU(const cv::Mat& input, const cv::Mat& rendered) {
+  cv::Mat shifted = ShiftMaskByCentroid(input, rendered);
+  return ComputeMaskIoU(input, shifted);
+}
+
+double ComputeAvgDT(const cv::Mat& mask, const cv::Mat& dt, bool use_l2) {
+  double sum = 0;
+  int count = 0;
+  for (int y = 0; y < mask.rows; ++y) {
+    const uint8_t* row = mask.ptr<uint8_t>(y);
+    const float* dt_row = dt.ptr<float>(y);
+    for (int x = 0; x < mask.cols; ++x) {
+      if (row[x]) {
+        sum += use_l2 ? dt_row[x] * dt_row[x] : static_cast<double>(dt_row[x]);
+        ++count;
+      }
+    }
+  }
+  if (count == 0) return 1e6;
+  return use_l2 ? std::sqrt(sum / count) : sum / count;
+}
+
+double ComputeCentroidDT(const cv::Mat& input, const cv::Mat& rendered,
+                          const cv::Mat& dt, bool use_l2) {
+  cv::Mat shifted = ShiftMaskByCentroid(input, rendered);
+  return ComputeAvgDT(shifted, dt, use_l2);
+}
+
+double ComputeDT_IoU(const cv::Mat& input, const cv::Mat& rendered,
+                      const cv::Mat& dt_l2) {
+  cv::Mat shifted = ShiftMaskByCentroid(input, rendered);
+  double avg_dt = ComputeAvgDT(shifted, dt_l2, true);
+  double iou = ComputeMaskIoU(input, shifted);
+  return avg_dt * (1.0 - iou);
+}
+
+double ComputeCentralMomentsDist(const cv::Mat& input, const cv::Mat& rendered) {
+  cv::Mat shifted = ShiftMaskByCentroid(input, rendered);
+  cv::Moments ma = cv::moments(input, true);
+  cv::Moments mb = cv::moments(shifted, true);
+  if (ma.m00 == 0 || mb.m00 == 0) return 1e6;
+  double a_m[] = {ma.nu20, ma.nu11, ma.nu02, ma.nu30, ma.nu21, ma.nu12, ma.nu03};
+  double b_m[] = {mb.nu20, mb.nu11, mb.nu02, mb.nu30, mb.nu21, mb.nu12, mb.nu03};
+  double dist = 0;
+  for (int i = 0; i < 7; ++i) {
+    double d = a_m[i] - b_m[i];
+    dist += d * d;
+  }
+  return std::sqrt(dist);
+}
+
+std::vector<cv::Point2f> ExtractLargestContour(const cv::Mat& mask) {
+  std::vector<std::vector<cv::Point>> contours;
+  cv::findContours(mask.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+  if (contours.empty()) return {};
+  size_t best = 0;
+  for (size_t i = 1; i < contours.size(); ++i)
+    if (contours[i].size() > contours[best].size()) best = i;
+  std::vector<cv::Point2f> pts;
+  for (auto& p : contours[best]) pts.emplace_back(p.x, p.y);
+  return pts;
+}
+
+std::vector<cv::Point2f> ResampleContour(const std::vector<cv::Point2f>& pts, int n) {
+  if (static_cast<int>(pts.size()) < 2 || n < 2) return pts;
+  std::vector<float> cum_len(pts.size());
+  cum_len[0] = 0;
+  for (size_t i = 1; i < pts.size(); ++i) {
+    float dx = pts[i].x - pts[i - 1].x;
+    float dy = pts[i].y - pts[i - 1].y;
+    cum_len[i] = cum_len[i - 1] + std::sqrt(dx * dx + dy * dy);
+  }
+  float total = cum_len.back();
+  if (total < 1e-6f) return pts;
+  std::vector<cv::Point2f> resampled(n);
+  int seg = 0;
+  for (int i = 0; i < n; ++i) {
+    float target = total * i / n;
+    while (seg < static_cast<int>(cum_len.size()) - 2 && cum_len[seg + 1] < target) ++seg;
+    float denom = cum_len[seg + 1] - cum_len[seg];
+    float t = denom > 0 ? (target - cum_len[seg]) / denom : 0;
+    resampled[i].x = pts[seg].x + t * (pts[seg + 1].x - pts[seg].x);
+    resampled[i].y = pts[seg].y + t * (pts[seg + 1].y - pts[seg].y);
+  }
+  return resampled;
+}
+
+double ComputeShapeContextDist(const cv::Mat& input, const cv::Mat& rendered) {
+  cv::Mat shifted = ShiftMaskByCentroid(input, rendered);
+  auto pa = ExtractLargestContour(input);
+  auto pb = ExtractLargestContour(shifted);
+  if (pa.empty() || pb.empty()) return 1e6;
+  int n_pts = 100;
+  pa = ResampleContour(pa, n_pts);
+  pb = ResampleContour(pb, n_pts);
+  int n_bins_r = 5, n_bins_t = 12;
+  int n_bins = n_bins_r * n_bins_t;
+  auto computeDesc = [&](const std::vector<cv::Point2f>& pts) {
+    std::vector<std::vector<float>> desc(n_pts, std::vector<float>(n_bins, 0));
+    for (int i = 0; i < n_pts; ++i) {
+      for (int j = 0; j < n_pts; ++j) {
+        if (i == j) continue;
+        float dx = pts[j].x - pts[i].x;
+        float dy = pts[j].y - pts[i].y;
+        float r = std::sqrt(dx * dx + dy * dy);
+        float theta = std::atan2(dy, dx);
+        int r_bin = std::min(n_bins_r - 1, static_cast<int>(std::log(r + 1) / std::log(2)));
+        int t_bin = static_cast<int>((theta + static_cast<float>(M_PI)) /
+                                      (2 * static_cast<float>(M_PI)) * n_bins_t) % n_bins_t;
+        desc[i][r_bin * n_bins_t + t_bin]++;
+      }
+    }
+    for (auto& d : desc) {
+      float s = 0;
+      for (auto v : d) s += v;
+      if (s > 0) for (auto& v : d) v /= s;
+    }
+    return desc;
+  };
+  auto da = computeDesc(pa);
+  auto db = computeDesc(pb);
+  double total = 0;
+  for (int i = 0; i < n_pts; ++i) {
+    double chi2 = 0;
+    for (int k = 0; k < n_bins; ++k) {
+      double s = da[i][k] + db[i][k];
+      if (s > 0) { double d = da[i][k] - db[i][k]; chi2 += d * d / s; }
+    }
+    total += chi2;
+  }
+  return total / n_pts;
+}
+
+double ComputeContourChamferDist(const cv::Mat& input, const cv::Mat& rendered) {
+  cv::Mat shifted = ShiftMaskByCentroid(input, rendered);
+  auto pa = ExtractLargestContour(input);
+  auto pb = ExtractLargestContour(shifted);
+  if (pa.empty() || pb.empty()) return 1e6;
+  int n_pts = 200;
+  pa = ResampleContour(pa, n_pts);
+  pb = ResampleContour(pb, n_pts);
+  double forward = 0;
+  for (auto& p : pa) {
+    double min_d = 1e9;
+    for (auto& q : pb) { double d = (p.x-q.x)*(p.x-q.x)+(p.y-q.y)*(p.y-q.y); if (d < min_d) min_d = d; }
+    forward += std::sqrt(min_d);
+  }
+  forward /= n_pts;
+  double backward = 0;
+  for (auto& p : pb) {
+    double min_d = 1e9;
+    for (auto& q : pa) { double d = (p.x-q.x)*(p.x-q.x)+(p.y-q.y)*(p.y-q.y); if (d < min_d) min_d = d; }
+    backward += std::sqrt(min_d);
+  }
+  backward /= n_pts;
+  return (forward + backward) / 2;
+}
+
+double ComputeFourierDescriptorDist(const cv::Mat& input, const cv::Mat& rendered) {
+  cv::Mat shifted = ShiftMaskByCentroid(input, rendered);
+  auto pa = ExtractLargestContour(input);
+  auto pb = ExtractLargestContour(shifted);
+  if (pa.empty() || pb.empty()) return 1e6;
+  int n_pts = 128;
+  pa = ResampleContour(pa, n_pts);
+  pb = ResampleContour(pb, n_pts);
+  auto computeDesc = [&](const std::vector<cv::Point2f>& pts) -> std::vector<double> {
+    cv::Mat cmplx(1, n_pts, CV_64FC2);
+    cv::Vec2d ctr(0, 0);
+    for (int i = 0; i < n_pts; ++i) { cmplx.at<cv::Vec2d>(0, i) = cv::Vec2d(pts[i].x, pts[i].y); ctr += cmplx.at<cv::Vec2d>(0, i); }
+    ctr /= n_pts;
+    for (int i = 0; i < n_pts; ++i) cmplx.at<cv::Vec2d>(0, i) -= ctr;
+    cv::Mat dft_r;
+    cv::dft(cmplx, dft_r);
+    int K = 32;
+    std::vector<double> desc(K);
+    for (int i = 0; i < K; ++i) { auto v = dft_r.at<cv::Vec2d>(0, i + 1); desc[i] = std::sqrt(v[0]*v[0]+v[1]*v[1]); }
+    double norm = desc[0] > 0 ? desc[0] : 1.0;
+    for (auto& d : desc) d /= norm;
+    return desc;
+  };
+  auto da = computeDesc(pa);
+  auto db = computeDesc(pb);
+  double dist = 0;
+  for (size_t i = 0; i < da.size(); ++i) { double d = da[i] - db[i]; dist += d * d; }
+  return std::sqrt(dist);
+}
+
+}  // namespace
 
 namespace pose_matching {
 
@@ -813,6 +994,15 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
                 return a.cost < b.cost;
               });
   } else {
+    cv::Mat input_dt_l1, input_dt_l2;
+    bool needs_dt = (params.sort_metric == CandidateSortMetric::CentroidDT_L1 ||
+                     params.sort_metric == CandidateSortMetric::CentroidDT_L2 ||
+                     params.sort_metric == CandidateSortMetric::DT_IoU);
+    if (needs_dt) {
+      cv::distanceTransform(binary_mask, input_dt_l2, cv::DIST_L2, 5);
+      cv::distanceTransform(binary_mask, input_dt_l1, cv::DIST_L1, 3);
+    }
+
     std::vector<std::pair<double, size_t>> scored_idx(refine_candidates.size());
     for (size_t i = 0; i < refine_candidates.size(); ++i) {
       const auto& cand = refine_candidates[i];
@@ -825,14 +1015,31 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
       mp.rz = cand.pose.rz;
       cv::Mat rendered = generator_->GeneratePose(mp);
       double score;
-      if (params.sort_metric == CandidateSortMetric::HuMoments) {
-        score = ComputeHuDistance(rendered, binary_mask);
-      } else if (params.sort_metric == CandidateSortMetric::ZernikeMoments) {
-        score = ComputeZernikeDistance(rendered, binary_mask);
-      } else if (params.sort_metric == CandidateSortMetric::CentroidIoU) {
-        score = 1.0 - ComputeCentroidAlignedIoU(binary_mask, rendered);
-      } else {
-        score = (1.0 - cand.iou) * ComputeZernikeDistance(rendered, binary_mask);
+      switch (params.sort_metric) {
+        case CandidateSortMetric::HuMoments:
+          score = ComputeHuDistance(rendered, binary_mask); break;
+        case CandidateSortMetric::ZernikeMoments:
+          score = ComputeZernikeDistance(rendered, binary_mask); break;
+        case CandidateSortMetric::IoUZernikeMoments:
+          score = (1.0 - cand.iou) * ComputeZernikeDistance(rendered, binary_mask); break;
+        case CandidateSortMetric::CentroidIoU:
+          score = 1.0 - ComputeCentroidAlignedIoU(binary_mask, rendered); break;
+        case CandidateSortMetric::CentroidDT_L1:
+          score = ComputeCentroidDT(binary_mask, rendered, input_dt_l1, false); break;
+        case CandidateSortMetric::CentroidDT_L2:
+          score = ComputeCentroidDT(binary_mask, rendered, input_dt_l2, true); break;
+        case CandidateSortMetric::DT_IoU:
+          score = ComputeDT_IoU(binary_mask, rendered, input_dt_l2); break;
+        case CandidateSortMetric::CentralMoments:
+          score = ComputeCentralMomentsDist(binary_mask, rendered); break;
+        case CandidateSortMetric::ShapeContext:
+          score = ComputeShapeContextDist(binary_mask, rendered); break;
+        case CandidateSortMetric::ContourChamfer:
+          score = ComputeContourChamferDist(binary_mask, rendered); break;
+        case CandidateSortMetric::FourierDescriptor:
+          score = ComputeFourierDescriptorDist(binary_mask, rendered); break;
+        default:
+          score = cand.iou; break;
       }
       scored_idx[i] = {score, i};
     }
@@ -844,12 +1051,22 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
     }
     refine_candidates = std::move(sorted);
 
-    const char* metric_name =
-        (params.sort_metric == CandidateSortMetric::HuMoments)        ? "Hu" :
-        (params.sort_metric == CandidateSortMetric::ZernikeMoments)   ? "Zernike" :
-        (params.sort_metric == CandidateSortMetric::CentroidIoU)      ? "CentroidIoU" :
-                                                                         "IoU*Zernike";
-    std::cout << "[SortMetric] " << metric_name << " sort scores:\n";
+    const char* mname = "Unknown";
+    switch (params.sort_metric) {
+      case CandidateSortMetric::HuMoments:        mname = "Hu"; break;
+      case CandidateSortMetric::ZernikeMoments:   mname = "Zernike"; break;
+      case CandidateSortMetric::IoUZernikeMoments: mname = "IoU*Zernike"; break;
+      case CandidateSortMetric::CentroidIoU:      mname = "CentroidIoU"; break;
+      case CandidateSortMetric::CentroidDT_L1:    mname = "CentroidDT_L1"; break;
+      case CandidateSortMetric::CentroidDT_L2:    mname = "CentroidDT_L2"; break;
+      case CandidateSortMetric::DT_IoU:           mname = "DT_IoU"; break;
+      case CandidateSortMetric::CentralMoments:   mname = "CentralMoments"; break;
+      case CandidateSortMetric::ShapeContext:     mname = "ShapeContext"; break;
+      case CandidateSortMetric::ContourChamfer:  mname = "ContourChamfer"; break;
+      case CandidateSortMetric::FourierDescriptor: mname = "FourierDescriptor"; break;
+      default: break;
+    }
+    std::cout << "[SortMetric] " << mname << " sort scores:\n";
     for (size_t i = 0; i < refine_candidates.size(); ++i) {
       std::cout << "  [" << i << "] score=" << scored_idx[i].first
                 << " iou=" << refine_candidates[i].iou << "\n";
@@ -858,13 +1075,24 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
 
   auto t_sort_end = std::chrono::high_resolution_clock::now();
   double sort_ms = std::chrono::duration<double, std::milli>(t_sort_end - t_sort_start).count();
-  std::cout << "[Timing] Sort candidates ("
-            << (params.sort_metric == CandidateSortMetric::IoU              ? "IoU" :
-                params.sort_metric == CandidateSortMetric::HuMoments        ? "Hu" :
-                params.sort_metric == CandidateSortMetric::ZernikeMoments   ? "Zernike" :
-                params.sort_metric == CandidateSortMetric::CentroidIoU      ? "CentroidIoU" :
-                                                                              "IoU*Zernike")
-            << "): " << sort_ms << " ms\n";
+  {
+    const char* mname = "IoU";
+    switch (params.sort_metric) {
+      case CandidateSortMetric::HuMoments:        mname = "Hu"; break;
+      case CandidateSortMetric::ZernikeMoments:   mname = "Zernike"; break;
+      case CandidateSortMetric::IoUZernikeMoments: mname = "IoU*Zernike"; break;
+      case CandidateSortMetric::CentroidIoU:      mname = "CentroidIoU"; break;
+      case CandidateSortMetric::CentroidDT_L1:    mname = "CentroidDT_L1"; break;
+      case CandidateSortMetric::CentroidDT_L2:    mname = "CentroidDT_L2"; break;
+      case CandidateSortMetric::DT_IoU:           mname = "DT_IoU"; break;
+      case CandidateSortMetric::CentralMoments:   mname = "CentralMoments"; break;
+      case CandidateSortMetric::ShapeContext:     mname = "ShapeContext"; break;
+      case CandidateSortMetric::ContourChamfer:  mname = "ContourChamfer"; break;
+      case CandidateSortMetric::FourierDescriptor: mname = "FourierDescriptor"; break;
+      default: break;
+    }
+    std::cout << "[Timing] Sort candidates (" << mname << "): " << sort_ms << " ms\n";
+  }
 
   SearchResult best_result;
   best_result.iou = -1;

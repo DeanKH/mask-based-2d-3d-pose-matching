@@ -27,6 +27,13 @@ enum class CandidateSortMetric {
   ZernikeMoments,
   IoUZernikeMoments,
   CentroidIoU,
+  CentroidDT_L1,
+  CentroidDT_L2,
+  DT_IoU,
+  CentralMoments,
+  ShapeContext,
+  ContourChamfer,
+  FourierDescriptor,
 };
 
 class Visualizer;

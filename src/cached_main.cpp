@@ -45,7 +45,7 @@ static void PrintUsage(const char* program) {
        << "  --lm-iterations INT  LM/GN max iterations (default: 100)\n"
         << "  --lm-tolerance FLOAT LM/GN convergence tolerance (default: 1e-6)\n"
        << "  --early-termination-iou FLOAT  Stop refining remaining candidates when IoU exceeds this (default: disabled)\n"
-       << "  --sort-metric STR    Sort metric for refine candidates: iou, hu, zernike, iou_zernike, centroid_iou (default: iou)\n"
+       << "  --sort-metric STR    Sort metric: iou, hu, zernike, iou_zernike, centroid_iou, centroid_dt_l1, centroid_dt_l2, dt_iou, central_moments, shape_context, contour_chamfer, fourier (default: iou)\n"
        << "  --int-mask DIR       Save candidate overlay images to DIR (red=input, green=rendered)\n"
        << "  --rerun [DIR]        Enable rerun visualization, save to DIR (default: .)\n"
        << "  --profile PATH       Write gperftools CPU profile to PATH\n"
@@ -141,6 +141,13 @@ int main(int argc, char* argv[]) {
       else if (sm == "zernike") est_params.sort_metric = pose_matching::CandidateSortMetric::ZernikeMoments;
       else if (sm == "iou_zernike") est_params.sort_metric = pose_matching::CandidateSortMetric::IoUZernikeMoments;
       else if (sm == "centroid_iou") est_params.sort_metric = pose_matching::CandidateSortMetric::CentroidIoU;
+      else if (sm == "centroid_dt_l1") est_params.sort_metric = pose_matching::CandidateSortMetric::CentroidDT_L1;
+      else if (sm == "centroid_dt_l2") est_params.sort_metric = pose_matching::CandidateSortMetric::CentroidDT_L2;
+      else if (sm == "dt_iou") est_params.sort_metric = pose_matching::CandidateSortMetric::DT_IoU;
+      else if (sm == "central_moments") est_params.sort_metric = pose_matching::CandidateSortMetric::CentralMoments;
+      else if (sm == "shape_context") est_params.sort_metric = pose_matching::CandidateSortMetric::ShapeContext;
+      else if (sm == "contour_chamfer") est_params.sort_metric = pose_matching::CandidateSortMetric::ContourChamfer;
+      else if (sm == "fourier") est_params.sort_metric = pose_matching::CandidateSortMetric::FourierDescriptor;
       else { std::cerr << "Error: unknown sort metric: " << sm << "\n"; return 1; }
     } else if (arg == "--int-mask") {
       if (++i >= args.size()) return 1;

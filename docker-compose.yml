@@ -58,15 +58,16 @@ services:
       - .:/workspace
     entrypoint: ["/opt/build/pose_matching_cached"]
     environment:
-      - OBJECT_NAME=${OBJECT_NAME:-pen}
+      - OBJECT_NAME=${OBJECT_NAME:-ad}
+      - SORT_METRIC=${SORT_METRIC:-iou}
     command: [
-      "--model", "/workspace/mask-generation/model/${OBJECT_NAME:-pen}.step",
-      "--image", "/workspace/input/${OBJECT_NAME:-pen}/rgb.png",
-      "--mask", "/workspace/input/${OBJECT_NAME:-pen}/mask.png",
+      "--model", "/workspace/mask-generation/model/${OBJECT_NAME:-ad}.step",
+      "--image", "/workspace/input/${OBJECT_NAME:-ad}/rgb.png",
+      "--mask", "/workspace/input/${OBJECT_NAME:-ad}/mask.png",
       "--camera", "/workspace/camera_info.json",
       "--scale", "0.001",
-      "--cache", "/workspace/cache/${OBJECT_NAME:-pen}.bin",
-      "--output", "/workspace/result/${OBJECT_NAME:-pen}/result_cached.png",
+      "--cache", "/workspace/cache/${OBJECT_NAME:-ad}.bin",
+      "--output", "/workspace/result/${OBJECT_NAME:-ad}/result_cached.png",
       "--rerun", "/workspace/record",
       "--max-candidates", "30",
       "--fatol", "1e-4",
@@ -75,9 +76,9 @@ services:
       "--lm-tolerance", "1e-9",
       "--refine-method", "nelder-mead",
       "--early-termination-iou", "0.95",
-      "--int-mask", "/workspace/int",
-      "--sort-metric", "centroid_iou"
+      "--sort-metric", "${SORT_METRIC:-centroid_iou}"
     ]
+      # "--int-mask", "/workspace/int",
 
   visualize-poses:
     build: .
