@@ -21,6 +21,13 @@ enum class RefineMethod {
   GaussNewton,
 };
 
+enum class CandidateSortMetric {
+  IoU,
+  HuMoments,
+  ZernikeMoments,
+  IoUZernikeMoments,
+};
+
 class Visualizer;
 
 struct Pose6D {
@@ -64,6 +71,7 @@ struct EstimationParams {
   double lm_relative_tol = 1e-6;
   double lm_absolute_tol = 1e-6;
   double early_termination_iou = 1.0;
+  CandidateSortMetric sort_metric = CandidateSortMetric::IoU;
   std::string int_mask_dir;
 };
 

@@ -44,7 +44,8 @@ static void PrintUsage(const char* program) {
        << "  --contour-points INT Number of contour sample points (default: 1000)\n"
        << "  --lm-iterations INT  LM/GN max iterations (default: 100)\n"
         << "  --lm-tolerance FLOAT LM/GN convergence tolerance (default: 1e-6)\n"
-        << "  --early-termination-iou FLOAT  Stop refining remaining candidates when IoU exceeds this (default: disabled)\n"
+       << "  --early-termination-iou FLOAT  Stop refining remaining candidates when IoU exceeds this (default: disabled)\n"
+       << "  --sort-metric STR    Sort metric for refine candidates: iou, hu, zernike, iou_zernike (default: iou)\n"
        << "  --int-mask DIR       Save candidate overlay images to DIR (red=input, green=rendered)\n"
        << "  --rerun [DIR]        Enable rerun visualization, save to DIR (default: .)\n"
        << "  --profile PATH       Write gperftools CPU profile to PATH\n"
@@ -132,6 +133,14 @@ int main(int argc, char* argv[]) {
     } else if (arg == "--early-termination-iou") {
       if (++i >= args.size()) return 1;
       est_params.early_termination_iou = std::stod(args[i]);
+    } else if (arg == "--sort-metric") {
+      if (++i >= args.size()) return 1;
+      const std::string& sm = args[i];
+      if (sm == "iou") est_params.sort_metric = pose_matching::CandidateSortMetric::IoU;
+      else if (sm == "hu") est_params.sort_metric = pose_matching::CandidateSortMetric::HuMoments;
+      else if (sm == "zernike") est_params.sort_metric = pose_matching::CandidateSortMetric::ZernikeMoments;
+      else if (sm == "iou_zernike") est_params.sort_metric = pose_matching::CandidateSortMetric::IoUZernikeMoments;
+      else { std::cerr << "Error: unknown sort metric: " << sm << "\n"; return 1; }
     } else if (arg == "--int-mask") {
       if (++i >= args.size()) return 1;
       est_params.int_mask_dir = args[i];

@@ -30,6 +30,108 @@
 #include "nelder_mead.h"
 #include "visualizer.h"
 
+namespace {
+
+double ComputeHuDistance(const cv::Mat& a, const cv::Mat& b) {
+  cv::Mat hu_a, hu_b;
+  cv::HuMoments(cv::moments(a), hu_a);
+  cv::HuMoments(cv::moments(b), hu_b);
+  double dist = 0;
+  for (int i = 0; i < 7; ++i) {
+    double ha = hu_a.at<double>(i);
+    double hb = hu_b.at<double>(i);
+    double la = -std::copysign(std::log10(std::abs(ha) + 1e-30), ha);
+    double lb = -std::copysign(std::log10(std::abs(hb) + 1e-30), hb);
+    double d = la - lb;
+    dist += d * d;
+  }
+  return std::sqrt(dist);
+}
+
+double ZernikeRadial(int n, int m, double r) {
+  double sum = 0;
+  int s_max = (n - m) / 2;
+  for (int s = 0; s <= s_max; ++s) {
+    double coeff = (s % 2 == 0 ? 1.0 : -1.0);
+    coeff *= std::tgamma(n - s + 1);
+    coeff /= std::tgamma(s + 1);
+    coeff /= std::tgamma((n + m) / 2 - s + 1);
+    coeff /= std::tgamma((n - m) / 2 - s + 1);
+    sum += coeff * std::pow(r, n - 2 * s);
+  }
+  return sum;
+}
+
+std::vector<double> ComputeZernikeFeatures(const cv::Mat& mask, int max_order) {
+  cv::Moments mom = cv::moments(mask, true);
+  if (mom.m00 == 0) return {};
+  double cx = mom.m10 / mom.m00;
+  double cy = mom.m01 / mom.m00;
+
+  double max_r = 0;
+  for (int y = 0; y < mask.rows; ++y) {
+    const uint8_t* row = mask.ptr<uint8_t>(y);
+    for (int x = 0; x < mask.cols; ++x) {
+      if (row[x] == 0) continue;
+      double dx = x - cx, dy = y - cy;
+      max_r = std::max(max_r, std::sqrt(dx * dx + dy * dy));
+    }
+  }
+  if (max_r < 1.0) max_r = 1.0;
+
+  struct Px { double r, theta; };
+  std::vector<Px> pixels;
+  for (int y = 0; y < mask.rows; ++y) {
+    const uint8_t* row = mask.ptr<uint8_t>(y);
+    for (int x = 0; x < mask.cols; ++x) {
+      if (row[x] == 0) continue;
+      double dx = (x - cx) / max_r, dy = (y - cy) / max_r;
+      double r = std::sqrt(dx * dx + dy * dy);
+      if (r > 1.0) continue;
+      pixels.push_back({r, std::atan2(dy, dx)});
+    }
+  }
+
+  std::vector<double> features;
+  for (int n = 0; n <= max_order; ++n) {
+    for (int m = 0; m <= n; ++m) {
+      if ((n - m) % 2 != 0) continue;
+      double re = 0, im = 0;
+      for (const auto& px : pixels) {
+        double R = ZernikeRadial(n, m, px.r);
+        re += R * std::cos(m * px.theta);
+        im += R * std::sin(m * px.theta);
+      }
+      double norm = (n + 1) / M_PI;
+      features.push_back(std::sqrt(re * re + im * im) * norm);
+    }
+  }
+  return features;
+}
+
+double ComputeZernikeDistance(const cv::Mat& a, const cv::Mat& b, int max_order = 8) {
+  auto fa = ComputeZernikeFeatures(a, max_order);
+  auto fb = ComputeZernikeFeatures(b, max_order);
+  if (fa.size() != fb.size() || fa.empty()) return 1e6;
+  double na = 0, nb = 0;
+  for (size_t i = 0; i < fa.size(); ++i) {
+    na += fa[i] * fa[i];
+    nb += fb[i] * fb[i];
+  }
+  na = std::sqrt(na);
+  nb = std::sqrt(nb);
+  if (na > 0) for (auto& v : fa) v /= na;
+  if (nb > 0) for (auto& v : fb) v /= nb;
+  double dist = 0;
+  for (size_t i = 0; i < fa.size(); ++i) {
+    double d = fa[i] - fb[i];
+    dist += d * d;
+  }
+  return std::sqrt(dist);
+}
+
+}  // namespace
+
 namespace pose_matching {
 
 CachedPoseEstimator::CachedPoseEstimator(
@@ -674,10 +776,62 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
     }
   }
 
-  std::sort(refine_candidates.begin(), refine_candidates.end(),
-            [](const ScoredCandidate& a, const ScoredCandidate& b) {
-              return a.cost < b.cost;
-            });
+  auto t_sort_start = std::chrono::high_resolution_clock::now();
+
+  if (params.sort_metric == CandidateSortMetric::IoU) {
+    std::sort(refine_candidates.begin(), refine_candidates.end(),
+              [](const ScoredCandidate& a, const ScoredCandidate& b) {
+                return a.cost < b.cost;
+              });
+  } else {
+    std::vector<std::pair<double, size_t>> scored_idx(refine_candidates.size());
+    for (size_t i = 0; i < refine_candidates.size(); ++i) {
+      const auto& cand = refine_candidates[i];
+      maskgen::MeshPose mp;
+      mp.tx = cand.pose.tx;
+      mp.ty = cand.pose.ty;
+      mp.tz = cand.pose.tz;
+      mp.rx = cand.pose.rx;
+      mp.ry = cand.pose.ry;
+      mp.rz = cand.pose.rz;
+      cv::Mat rendered = generator_->GeneratePose(mp);
+      double score;
+      if (params.sort_metric == CandidateSortMetric::HuMoments) {
+        score = ComputeHuDistance(rendered, binary_mask);
+      } else if (params.sort_metric == CandidateSortMetric::ZernikeMoments) {
+        score = ComputeZernikeDistance(rendered, binary_mask);
+      } else {
+        score = (1.0 - cand.iou) * ComputeZernikeDistance(rendered, binary_mask);
+      }
+      scored_idx[i] = {score, i};
+    }
+    std::sort(scored_idx.begin(), scored_idx.end());
+    std::vector<ScoredCandidate> sorted;
+    sorted.reserve(refine_candidates.size());
+    for (const auto& [sc, idx] : scored_idx) {
+      sorted.push_back(refine_candidates[idx]);
+    }
+    refine_candidates = std::move(sorted);
+
+    const char* metric_name =
+        (params.sort_metric == CandidateSortMetric::HuMoments)        ? "Hu" :
+        (params.sort_metric == CandidateSortMetric::ZernikeMoments)   ? "Zernike" :
+                                                                         "IoU*Zernike";
+    std::cout << "[SortMetric] " << metric_name << " sort scores:\n";
+    for (size_t i = 0; i < refine_candidates.size(); ++i) {
+      std::cout << "  [" << i << "] score=" << scored_idx[i].first
+                << " iou=" << refine_candidates[i].iou << "\n";
+    }
+  }
+
+  auto t_sort_end = std::chrono::high_resolution_clock::now();
+  double sort_ms = std::chrono::duration<double, std::milli>(t_sort_end - t_sort_start).count();
+  std::cout << "[Timing] Sort candidates ("
+            << (params.sort_metric == CandidateSortMetric::IoU              ? "IoU" :
+                params.sort_metric == CandidateSortMetric::HuMoments        ? "Hu" :
+                params.sort_metric == CandidateSortMetric::ZernikeMoments   ? "Zernike" :
+                                                                              "IoU*Zernike")
+            << "): " << sort_ms << " ms\n";
 
   SearchResult best_result;
   best_result.iou = -1;

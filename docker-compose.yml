@@ -75,7 +75,8 @@ services:
       "--lm-tolerance", "1e-9",
       "--refine-method", "nelder-mead",
       "--early-termination-iou", "0.95",
-      "--int-mask", "/workspace/int"
+      "--int-mask", "/workspace/int",
+      "--sort-metric", "iou_zernike"
     ]
 
   visualize-poses:
