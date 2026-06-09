@@ -26,6 +26,7 @@ enum class CandidateSortMetric {
   HuMoments,
   ZernikeMoments,
   IoUZernikeMoments,
+  CentroidIoU,
 };
 
 class Visualizer;

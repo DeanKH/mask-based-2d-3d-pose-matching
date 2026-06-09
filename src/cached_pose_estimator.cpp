@@ -132,6 +132,35 @@ double ComputeZernikeDistance(const cv::Mat& a, const cv::Mat& b, int max_order 
 
 }  // namespace
 
+double ComputeCentroidAlignedIoU(const cv::Mat& input, const cv::Mat& rendered) {
+  cv::Moments mi = cv::moments(input, true);
+  cv::Moments mr = cv::moments(rendered, true);
+  if (mi.m00 == 0 || mr.m00 == 0) return 0.0;
+  int du = static_cast<int>(std::round(mi.m10 / mi.m00 - mr.m10 / mr.m00));
+  int dv = static_cast<int>(std::round(mi.m01 / mi.m00 - mr.m01 / mr.m00));
+
+  int h = input.rows, w = input.cols;
+  int r_r0 = std::max(0, dv), r_r1 = std::min(h, h + dv);
+  int r_c0 = std::max(0, du), r_c1 = std::min(w, w + du);
+  int i_r0 = r_r0 - dv, i_c0 = r_c0 - du;
+  int oh = r_r1 - r_r0, ow = r_c1 - r_c0;
+  if (oh <= 0 || ow <= 0) return 0.0;
+
+  cv::Rect render_rect(r_c0, r_r0, ow, oh);
+  cv::Rect input_rect(i_c0, i_r0, ow, oh);
+
+  cv::Mat shifted_rendered = cv::Mat::zeros(h, w, CV_8UC1);
+  rendered(render_rect).copyTo(shifted_rendered(input_rect));
+
+  cv::Mat ab;
+  cv::bitwise_and(input, shifted_rendered, ab);
+  int ab_count = cv::countNonZero(ab);
+  int a_count = cv::countNonZero(input);
+  int b_count = cv::countNonZero(shifted_rendered);
+  int denom = a_count + b_count - ab_count;
+  return denom > 0 ? static_cast<double>(ab_count) / denom : 0.0;
+}
+
 namespace pose_matching {
 
 CachedPoseEstimator::CachedPoseEstimator(
@@ -800,6 +829,8 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
         score = ComputeHuDistance(rendered, binary_mask);
       } else if (params.sort_metric == CandidateSortMetric::ZernikeMoments) {
         score = ComputeZernikeDistance(rendered, binary_mask);
+      } else if (params.sort_metric == CandidateSortMetric::CentroidIoU) {
+        score = 1.0 - ComputeCentroidAlignedIoU(binary_mask, rendered);
       } else {
         score = (1.0 - cand.iou) * ComputeZernikeDistance(rendered, binary_mask);
       }
@@ -816,6 +847,7 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
     const char* metric_name =
         (params.sort_metric == CandidateSortMetric::HuMoments)        ? "Hu" :
         (params.sort_metric == CandidateSortMetric::ZernikeMoments)   ? "Zernike" :
+        (params.sort_metric == CandidateSortMetric::CentroidIoU)      ? "CentroidIoU" :
                                                                          "IoU*Zernike";
     std::cout << "[SortMetric] " << metric_name << " sort scores:\n";
     for (size_t i = 0; i < refine_candidates.size(); ++i) {
@@ -830,6 +862,7 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
             << (params.sort_metric == CandidateSortMetric::IoU              ? "IoU" :
                 params.sort_metric == CandidateSortMetric::HuMoments        ? "Hu" :
                 params.sort_metric == CandidateSortMetric::ZernikeMoments   ? "Zernike" :
+                params.sort_metric == CandidateSortMetric::CentroidIoU      ? "CentroidIoU" :
                                                                               "IoU*Zernike")
             << "): " << sort_ms << " ms\n";
 

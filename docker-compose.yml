@@ -76,7 +76,7 @@ services:
       "--refine-method", "nelder-mead",
       "--early-termination-iou", "0.95",
       "--int-mask", "/workspace/int",
-      "--sort-metric", "iou_zernike"
+      "--sort-metric", "centroid_iou"
     ]
 
   visualize-poses:
