@@ -68,17 +68,17 @@ services:
       "--scale", "0.001",
       "--cache", "/workspace/cache/${OBJECT_NAME:-ad}.bin",
       "--output", "/workspace/result/${OBJECT_NAME:-ad}/result_cached.png",
-      "--rerun", "/workspace/record",
+      # "--rerun", "/workspace/record",
       "--max-candidates", "30",
       "--fatol", "1e-4",
       "--xatol", "1e-3",
       "--contour-points", "4000",
       "--lm-tolerance", "1e-9",
       "--refine-method", "nelder-mead",
-      "--early-termination-iou", "0.95",
+      "--early-termination-iou", "0.90",
+      # "--int-mask", "/workspace/int",
       "--sort-metric", "${SORT_METRIC:-centroid_iou}"
     ]
-      # "--int-mask", "/workspace/int",
 
   visualize-poses:
     build: .
