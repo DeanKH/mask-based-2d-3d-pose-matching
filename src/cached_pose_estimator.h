@@ -11,6 +11,7 @@
 
 #include <opencv2/core.hpp>
 
+#include "bobyqa.h"
 #include "cache_format.h"
 #include "contour_sampler.h"
 #include "nelder_mead.h"
@@ -51,7 +52,9 @@ class CachedPoseEstimator {
 
   SearchResult RefinePose(const ScoredCandidate& initial, const cv::Mat& input_mask,
                           const cv::Mat& dt_input, int max_iterations,
-                          const NelderMeadOptions& nm_opts, int refine_index,
+                          const NelderMeadOptions& nm_opts,
+                          const BobyqaOptions& bobyqa_opts,
+                          RefineMethod refine_method, int refine_index,
                           maskgen::MaskGenerator* generator,
                           const std::atomic<bool>* abort_flag = nullptr);
 

@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libeigen3-dev \
     libtbb-dev \
     libboost-all-dev \
+    libnlopt-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Build GTSAM from source

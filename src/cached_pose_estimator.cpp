@@ -768,6 +768,8 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
                                               const cv::Mat& dt_input,
                                               int max_iterations,
                                               const NelderMeadOptions& nm_opts,
+                                              const BobyqaOptions& bobyqa_opts,
+                                              RefineMethod refine_method,
                                               int refine_index,
                                               maskgen::MaskGenerator* generator,
                                               const std::atomic<bool>* abort_flag) {
@@ -878,10 +880,14 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
   };
 
   bool aborted = false;
-  try {
-    NelderMead(cost, x, initial_step, max_iterations, nm_opts);
-  } catch (const std::runtime_error&) {
-    aborted = true;
+  if (refine_method == RefineMethod::BOBYQA) {
+    Bobyqa(cost, x, initial_step, max_iterations, bobyqa_opts, abort_flag, &aborted);
+  } else {
+    try {
+      NelderMead(cost, x, initial_step, max_iterations, nm_opts);
+    } catch (const std::runtime_error&) {
+      aborted = true;
+    }
   }
 
   if (aborted) {
@@ -1186,7 +1192,9 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
     }
   }
 
-  if (params.refine_method == RefineMethod::NelderMead) {
+  if (params.refine_method == RefineMethod::NelderMead ||
+      params.refine_method == RefineMethod::BOBYQA) {
+    const char* method_tag = (params.refine_method == RefineMethod::BOBYQA) ? "BOBYQA" : "NM";
     const unsigned int hw_threads = std::thread::hardware_concurrency();
     const int num_threads = std::max(1, static_cast<int>(hw_threads)-2);
     const int actual_threads = std::min(num_threads, refine_count);
@@ -1207,9 +1215,10 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
         int i = next_idx.fetch_add(1);
         if (i >= refine_count) break;
         refine_results[i] = RefinePose(refine_candidates[i], binary_mask, dt_input,
-                                       params.nelder_mead_iterations, params.nm_options, i,
+                                       params.nelder_mead_iterations, params.nm_options,
+                                       params.bobyqa_options, params.refine_method, i,
                                        thread_generators[thread_id].get(), &early_stop);
-        std::cout << "[Timing] RefinePose NM candidate #" << i << " iou " << refine_results[i].iou << "\n";
+        std::cout << "[Timing] RefinePose " << method_tag << " candidate #" << i << " iou " << refine_results[i].iou << "\n";
         if (refine_results[i].iou >= params.early_termination_iou) {
           std::cout << "[EarlyTermination] IoU " << refine_results[i].iou
                     << " >= " << params.early_termination_iou
@@ -1235,7 +1244,7 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
         best_result = refine_results[i];
       }
     }
-    std::cout << "[Timing] RefinePose NM (x" << refine_count << ", " << actual_threads << " threads), best_idx=" << best_idx << "\n";
+    std::cout << "[Timing] RefinePose " << method_tag << " (x" << refine_count << ", " << actual_threads << " threads), best_idx=" << best_idx << "\n";
   } else {
     LMOptions lm_opts;
     lm_opts.optimizer = (params.refine_method == RefineMethod::GaussNewton)

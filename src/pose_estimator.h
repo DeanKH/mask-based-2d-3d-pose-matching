@@ -11,6 +11,7 @@
 
 #include <opencv2/core.hpp>
 
+#include "bobyqa.h"
 #include "nelder_mead.h"
 
 namespace pose_matching {
@@ -19,6 +20,7 @@ enum class RefineMethod {
   NelderMead,
   LevenbergMarquardt,
   GaussNewton,
+  BOBYQA,
 };
 
 enum class CandidateSortMetric {
@@ -73,6 +75,7 @@ struct EstimationParams {
   int top_k_local = 5;
   int max_refine_candidates = 5;
   NelderMeadOptions nm_options;
+  BobyqaOptions bobyqa_options;
   RefineMethod refine_method = RefineMethod::NelderMead;
   int contour_points = 1000;
   int lm_max_iterations = 100;
@@ -108,7 +111,9 @@ class PoseEstimator {
 
   SearchResult RefinePose(const ScoredCandidate& initial, const cv::Mat& input_mask,
                           const cv::Mat& dt_input, int max_iterations,
-                          const NelderMeadOptions& nm_opts, int refine_index,
+                          const NelderMeadOptions& nm_opts,
+                          const BobyqaOptions& bobyqa_opts,
+                          RefineMethod refine_method, int refine_index,
                           maskgen::MaskGenerator* generator);
 
   maskgen::CameraParams camera_params_;

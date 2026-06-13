@@ -75,7 +75,7 @@ services:
       "--contour-points", "4000",
       "--lm-tolerance", "1e-9",
       "--refine-method", "nelder-mead",
-      "--early-termination-iou", "0.90",
+      "--early-termination-iou", "0.95",
       # "--int-mask", "/workspace/int",
       "--sort-metric", "${SORT_METRIC:-centroid_iou}"
     ]

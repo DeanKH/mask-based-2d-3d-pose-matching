@@ -16,6 +16,9 @@ find_package(OpenSSL REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenMP REQUIRED)
 
+find_library(NLOPT_LIBRARY nlopt REQUIRED)
+message(STATUS "Found NLopt: ${NLOPT_LIBRARY}")
+
 include(FetchContent)
 FetchContent_Declare(rerun_sdk URL
     https://github.com/rerun-io/rerun/releases/download/0.33.0/rerun_cpp_sdk.zip
@@ -40,7 +43,8 @@ target_link_libraries(pose_matching
         ${OpenCV_LIBS}
         nlohmann_json::nlohmann_json
         rerun_sdk
-)
+        ${NLOPT_LIBRARY}
+    )
 
 add_executable(verify_pose src/verify_pose.cpp)
 
@@ -103,7 +107,8 @@ target_link_libraries(pose_matching_cached
         nlohmann_json::nlohmann_json
         rerun_sdk
         OpenMP::OpenMP_CXX
-)
+        ${NLOPT_LIBRARY}
+    )
 
 if(GTSAM_FOUND)
     find_library(GTSAM_LIBRARY gtsam REQUIRED)

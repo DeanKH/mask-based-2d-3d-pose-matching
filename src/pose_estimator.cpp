@@ -296,7 +296,8 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
                                        const cv::Mat& dt_input,
                                        int max_iterations,
                                        const NelderMeadOptions& nm_opts,
-                                       int refine_index,
+                                       const BobyqaOptions& bobyqa_opts,
+                                       RefineMethod refine_method, int refine_index,
                                        maskgen::MaskGenerator* generator) {
   std::vector<double> x = {initial.pose.tx, initial.pose.ty, initial.pose.tz,
                            initial.pose.rx, initial.pose.ry, initial.pose.rz};
@@ -390,7 +391,11 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
       0.3, 0.3, 0.3,
   };
 
-  NelderMead(cost, x, initial_step, max_iterations, nm_opts);
+  if (refine_method == RefineMethod::BOBYQA) {
+    Bobyqa(cost, x, initial_step, max_iterations, bobyqa_opts);
+  } else {
+    NelderMead(cost, x, initial_step, max_iterations, nm_opts);
+  }
 
   prof.Print("RefinePose #" + std::to_string(refine_index));
 
@@ -712,7 +717,8 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
       int i = next_idx.fetch_add(1);
       if (i >= refine_count) break;
       refine_results[i] = RefinePose(refine_candidates[i], binary_mask, dt_input,
-                                     params.nelder_mead_iterations, params.nm_options, i,
+                                     params.nelder_mead_iterations, params.nm_options,
+                                     params.bobyqa_options, params.refine_method, i,
                                      thread_generators[thread_id].get());
     }
   };
