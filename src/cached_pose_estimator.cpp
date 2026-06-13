@@ -818,54 +818,70 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
     mp.ry = p.ry;
     mp.rz = p.rz;
 
-    cv::Mat rendered;
-    {
-      ScopedTimer t(prof.generate_ms);
-      rendered = generator->GeneratePose(mp);
-    }
+    bool use_gpu = generator->HasComputeCost() && !viz_;
 
-    cv::Mat diff;
-    {
-      ScopedTimer t(prof.absdiff_ms);
-      cv::absdiff(rendered, input_mask, diff);
-      diff.convertTo(diff, CV_32F, 1.0 / 255.0);
-    }
+    double c;
 
-    cv::Mat dt_rendered;
-    {
-      ScopedTimer t(prof.dt_ms);
-      cv::distanceTransform(255 - rendered, dt_rendered, cv::DIST_L2, 5);
-      dt_rendered.convertTo(dt_rendered, CV_32F);
-    }
+    if (use_gpu) {
+      auto result = generator->GeneratePoseWithCost(
+          mp, static_cast<float>(scale_factor));
+      double area_rendered = result.rendered_area;
+      double area_ratio = area_input > 0
+                              ? std::abs(area_rendered - area_input) / area_input
+                              : 0.0;
+      c = result.chamfer_sum + 0.5 * area_ratio;
+    } else {
+      cv::Mat rendered;
+      {
+        ScopedTimer t(prof.generate_ms);
+        rendered = generator->GeneratePose(mp);
+      }
 
-    double chamfer_val;
-    {
-      ScopedTimer t(prof.chamfer_ms);
-      cv::Mat dt_combined = cv::max(dt_input_f, dt_rendered);
-      chamfer_val = cv::sum(dt_combined.mul(diff))[0] * scale_factor;
-    }
+      cv::Mat diff;
+      {
+        ScopedTimer t(prof.absdiff_ms);
+        cv::absdiff(rendered, input_mask, diff);
+        diff.convertTo(diff, CV_32F, 1.0 / 255.0);
+      }
 
-    double area_ratio;
-    {
-      ScopedTimer t(prof.area_ms);
-      double area_rendered = cv::countNonZero(rendered);
-      area_ratio = area_input > 0
-                       ? std::abs(area_rendered - area_input) / area_input
-                       : 0.0;
-    }
+      cv::Mat dt_rendered;
+      {
+        ScopedTimer t(prof.dt_ms);
+        cv::distanceTransform(255 - rendered, dt_rendered, cv::DIST_L2, 5);
+        dt_rendered.convertTo(dt_rendered, CV_32F);
+      }
 
-    double c = chamfer_val + 0.5 * area_ratio;
+      double chamfer_val;
+      {
+        ScopedTimer t(prof.chamfer_ms);
+        cv::Mat dt_combined = cv::max(dt_input_f, dt_rendered);
+        chamfer_val = cv::sum(dt_combined.mul(diff))[0] * scale_factor;
+      }
+
+      double area_ratio;
+      {
+        ScopedTimer t(prof.area_ms);
+        double area_rendered = cv::countNonZero(rendered);
+        area_ratio = area_input > 0
+                         ? std::abs(area_rendered - area_input) / area_input
+                         : 0.0;
+      }
+
+      c = chamfer_val + 0.5 * area_ratio;
+
+      if (viz_ && viz_iteration % 5 == 0) {
+        ScopedTimer t(prof.viz_ms);
+        double cur_iou = ComputeIoU(rendered, input_mask);
+        viz_->LogRefineStep(refine_index * 10000 + viz_iteration, p, rendered, c,
+                             cur_iou);
+      }
+    }
 
     if (c < best_cost_val) {
       best_cost_val = c;
       best_x = params;
     }
 
-    if (viz_ && viz_iteration % 5 == 0) {
-      ScopedTimer t(prof.viz_ms);
-      double cur_iou = ComputeIoU(rendered, input_mask);
-      viz_->LogRefineStep(refine_index * 10000 + viz_iteration, p, rendered, c, cur_iou);
-    }
     viz_iteration++;
 
     prof.total_wall_ms += std::chrono::duration<double, std::milli>(
@@ -912,8 +928,18 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
   mp.rx = refined.rx;
   mp.ry = refined.ry;
   mp.rz = refined.rz;
-  cv::Mat final_rendered = generator->GeneratePose(mp);
-  double final_iou = ComputeIoU(final_rendered, input_mask);
+
+  double final_iou;
+  if (generator->HasComputeCost() && !viz_) {
+    auto result = generator->GeneratePoseWithCost(
+        mp, static_cast<float>(scale_factor));
+    double denom = static_cast<double>(result.rendered_area) + area_input -
+                   result.intersection;
+    final_iou = denom > 0 ? result.intersection / denom : 0.0;
+  } else {
+    cv::Mat final_rendered = generator->GeneratePose(mp);
+    final_iou = ComputeIoU(final_rendered, input_mask);
+  }
 
   return {refined, final_iou};
 }
@@ -1203,6 +1229,12 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
     for (int t = 0; t < actual_threads; ++t) {
       thread_generators[t] = std::make_unique<maskgen::MaskGenerator>(camera_params_);
       thread_generators[t]->SetMesh(mesh_);
+      if (thread_generators[t]->HasComputeCost()) {
+        thread_generators[t]->SetCostInputs(dt_input, binary_mask);
+        std::cout << "[GPU] Thread " << t << " using GPU compute cost\n";
+      } else {
+        std::cout << "[CPU] Thread " << t << " using CPU (OpenCV) cost\n";
+      }
     }
 
     std::vector<SearchResult> refine_results(refine_count);
