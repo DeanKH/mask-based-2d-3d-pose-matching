@@ -1188,7 +1188,7 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
 
   if (params.refine_method == RefineMethod::NelderMead) {
     const unsigned int hw_threads = std::thread::hardware_concurrency();
-    const int num_threads = std::max(1, static_cast<int>(hw_threads));
+    const int num_threads = std::max(1, static_cast<int>(hw_threads)-2);
     const int actual_threads = std::min(num_threads, refine_count);
 
     std::vector<std::unique_ptr<maskgen::MaskGenerator>> thread_generators(actual_threads);
