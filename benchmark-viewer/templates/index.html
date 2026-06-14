@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Benchmark Viewer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; }
+    .header { background: #1a1a2e; color: white; padding: 20px; }
+    .header h1 { font-size: 24px; margin-bottom: 4px; }
+    .header p { font-size: 14px; opacity: 0.7; }
+    .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+    .tab { padding: 10px 24px; background: #ddd; border: none; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 14px; }
+    .tab.active { background: #4a3aff; color: white; }
+    .tab:hover:not(.active) { background: #ccc; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #eee; font-size: 13px; }
+    th { background: #f8f8f8; font-weight: 600; white-space: nowrap; }
+    tr:hover { background: #f5f5ff; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .run-id { font-family: monospace; font-size: 12px; color: #666; }
+
+    .summary-card { display: inline-block; background: white; border-radius: 8px; padding: 16px 20px; margin: 4px; min-width: 120px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .summary-card .label { font-size: 12px; color: #888; text-transform: uppercase; }
+    .summary-card .value { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+    .chart-container { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .chart-container h3 { margin-bottom: 12px; font-size: 16px; }
+
+    .compare-cell { cursor: pointer; }
+    .compare-cell:hover { background: #e8e8ff; }
+    .iou-bar { display: inline-block; height: 20px; background: #4CAF50; border-radius: 3px; vertical-align: middle; }
+    .iou-bar.warn { background: #FF9800; }
+    .iou-bar.bad { background: #f44336; }
+
+    .overlay-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 16px; }
+    .overlay-card { background: white; border-radius: 8px; padding: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .overlay-card img { width: 100%; border-radius: 4px; }
+    .overlay-card .info { margin-top: 8px; font-size: 12px; }
+    .overlay-card .info span { margin-right: 12px; }
+
+    .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    select { padding: 8px 12px; font-size: 14px; border-radius: 4px; border: 1px solid #ccc; }
+
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .badge-green { background: #d4edda; color: #155724; }
+    .badge-orange { background: #fff3cd; color: #856404; }
+    .badge-red { background: #f8d7da; color: #721c24; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Benchmark Viewer</h1>
+    <p>{{ runs|length }} runs found</p>
+  </div>
+
+  <div class="container">
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('overview')">Overview</button>
+      <button class="tab" onclick="switchTab('compare')">Compare</button>
+      <button class="tab" onclick="switchTab('overlays')">Overlays</button>
+      <button class="tab" onclick="switchTab('raw')">Raw Data</button>
+    </div>
+
+    <!-- Overview Tab -->
+    <div id="overview" class="panel active">
+      <div id="overview-cards"></div>
+      <div id="overview-table"></div>
+    </div>
+
+    <!-- Compare Tab -->
+    <div id="compare" class="panel">
+      <div class="detail-header">
+        <h2>Per-Sample Comparison</h2>
+      </div>
+      <div id="compare-table">Loading...</div>
+    </div>
+
+    <!-- Overlays Tab -->
+    <div id="overlays" class="panel">
+      <div class="detail-header">
+        <h2>Overlay Images</h2>
+        <div>
+          <label>Run: <select id="overlay-run-select" onchange="loadOverlays()"></select></label>
+        </div>
+      </div>
+      <div id="overlay-grid" class="overlay-grid"></div>
+    </div>
+
+    <!-- Raw Tab -->
+    <div id="raw" class="panel">
+      <div class="detail-header">
+        <h2>Raw JSON</h2>
+        <div>
+          <label>Run: <select id="raw-run-select" onchange="loadRaw()"></select></label>
+        </div>
+      </div>
+      <pre id="raw-json" style="background:white;padding:20px;border-radius:8px;overflow:auto;font-size:12px;max-height:600px;"></pre>
+    </div>
+  </div>
+
+  <script>
+    const runs = {{ runs | tojson }};
+
+    function switchTab(name) {
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.getElementById(name).classList.add('active');
+      event.target.classList.add('active');
+
+      if (name === 'compare') loadCompare();
+      if (name === 'overlays') initOverlays();
+      if (name === 'raw') initRaw();
+    }
+
+    function fmt(v, digits=4) {
+      if (v === null || v === undefined) return '-';
+      return typeof v === 'number' ? v.toFixed(digits) : v;
+    }
+
+    function iouBadge(iou) {
+      const cls = iou >= 0.9 ? 'badge-green' : iou >= 0.7 ? 'badge-orange' : 'badge-red';
+      return `<span class="badge ${cls}">${fmt(iou, 4)}</span>`;
+    }
+
+    // Overview
+    function renderOverview() {
+      let cards = '<div style="margin-bottom:20px">';
+      for (const r of runs) {
+        cards += `
+          <div class="summary-card">
+            <div class="label">${r.refine_method} | ${r.timestamp}</div>
+            <div class="value">${fmt(r.iou_mean, 4)}</div>
+            <div style="font-size:12px;color:#888;">IoU mean (${r.successful}/${r.total_samples})</div>
+            <div style="font-size:12px;color:#888;">Time: ${fmt(r.time_mean, 0)}ms</div>
+          </div>`;
+      }
+      cards += '</div>';
+
+      let table = `<table>
+        <thead><tr>
+          <th>Run</th><th>Method</th><th>Candidates</th><th>Max Refine</th>
+          <th>Use CPU</th><th>Sort Metric</th>
+          <th class="num">IoU mean</th><th class="num">IoU median</th><th class="num">IoU min</th><th class="num">IoU max</th>
+          <th class="num">Time mean (ms)</th><th class="num">Time total (ms)</th>
+          <th class="num">Trans err (m)</th><th class="num">Rot err (deg)</th>
+          <th>Success</th>
+        </tr></thead><tbody>`;
+      for (const r of runs) {
+        const p = r.params || {};
+        table += `<tr>
+          <td class="run-id">${r.id}</td>
+          <td>${r.refine_method}</td>
+          <td>${p.max_candidates || '-'}</td>
+          <td>${p.max_refine || '-'}</td>
+          <td>${p.use_cpu ? 'Yes' : 'No'}</td>
+          <td>${p.sort_metric || p.SORT_METRIC || '-'}</td>
+          <td class="num">${iouBadge(r.iou_mean)}</td>
+          <td class="num">${fmt(r.iou_median)}</td>
+          <td class="num">${fmt(r.iou_min)}</td>
+          <td class="num">${fmt(r.iou_max)}</td>
+          <td class="num">${fmt(r.time_mean, 1)}</td>
+          <td class="num">${fmt(r.time_total, 0)}</td>
+          <td class="num">${fmt(r.trans_mean, 5)}</td>
+          <td class="num">${fmt(r.rot_mean, 2)}</td>
+          <td>${r.successful}/${r.total_samples}</td>
+        </tr>`;
+      }
+      table += '</tbody></table>';
+
+      document.getElementById('overview-cards').innerHTML = cards;
+      document.getElementById('overview-table').innerHTML = table;
+    }
+
+    // Compare
+    async function loadCompare() {
+      const resp = await fetch('/api/compare');
+      const data = await resp.json();
+      const runList = data.runs;
+      const samples = data.samples;
+
+      let html = `<table><thead><tr><th>Sample</th>`;
+      for (const run of runList) {
+        html += `<th class="num">${run.label}<br><small>IoU / Time / t-err / r-err</small></th>`;
+      }
+      html += '</tr></thead><tbody>';
+
+      for (const s of samples) {
+        html += `<tr><td><strong>${s.sample_id}</strong></td>`;
+        for (const run of runList) {
+          const d = s[run.id];
+          if (!d || !d.success) {
+            html += '<td class="num"><span class="badge badge-red">FAIL</span></td>';
+            continue;
+          }
+          html += `<td class="num compare-cell" onclick="loadSampleOverlay('${run.id}','${s.sample_id}')">
+            ${iouBadge(d.iou)}
+            <div style="font-size:11px;color:#888;">
+              ${fmt(d.time_ms,0)}ms / ${fmt(d.trans_error,4)}m / ${fmt(d.rot_error,1)}°
+            </div>
+          </td>`;
+        }
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      document.getElementById('compare-table').innerHTML = html;
+    }
+
+    // Overlays
+    function initOverlays() {
+      const sel = document.getElementById('overlay-run-select');
+      if (sel.children.length === 0) {
+        for (const r of runs) {
+          sel.appendChild(new Option(`${r.refine_method} | ${r.timestamp}`, r.id));
+        }
+      }
+      loadOverlays();
+    }
+
+    async function loadOverlays() {
+      const runId = document.getElementById('overlay-run-select').value;
+      if (!runId) return;
+      const resp = await fetch(`/api/run/${runId}`);
+      const data = await resp.json();
+      const results = data.results || {};
+      let html = '';
+      for (const [sampleId, sd] of Object.entries(results)) {
+        if (!sd.success) continue;
+        const samplePath = sampleId;
+        html += `<div class="overlay-card">
+          <img src="/overlay/${runId}/${samplePath}/final_overlay.png" loading="lazy"
+               onerror="this.parentElement.style.display='none'">
+          <div class="info">
+            <strong>${sampleId}</strong>
+            <span>IoU: ${iouBadge(sd.iou)}</span>
+            <span>t-err: ${fmt(sd.translation_error_m, 4)}m</span>
+            <span>r-err: ${fmt(sd.rotation_error_deg, 1)}°</span>
+          </div>
+        </div>`;
+      }
+      document.getElementById('overlay-grid').innerHTML = html;
+    }
+
+    function loadSampleOverlay(runId, sampleId) {
+      // Switch to overlays tab with specific run
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.getElementById('overlays').classList.add('active');
+      document.querySelector('[onclick="switchTab(\'overlays\')"]').classList.add('active');
+      initOverlays();
+      document.getElementById('overlay-run-select').value = runId;
+      loadOverlays();
+    }
+
+    // Raw
+    function initRaw() {
+      const sel = document.getElementById('raw-run-select');
+      if (sel.children.length === 0) {
+        for (const r of runs) {
+          sel.appendChild(new Option(`${r.refine_method} | ${r.timestamp}`, r.id));
+        }
+        loadRaw();
+      }
+    }
+
+    async function loadRaw() {
+      const runId = document.getElementById('raw-run-select').value;
+      if (!runId) return;
+      const resp = await fetch(`/api/run/${runId}`);
+      const data = await resp.json();
+      document.getElementById('raw-json').textContent = JSON.stringify(data, null, 2);
+    }
+
+    renderOverview();
+  </script>
+</body>
+</html>

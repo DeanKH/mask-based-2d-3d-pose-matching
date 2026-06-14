@@ -5,3 +5,4 @@ interactive-3d-annotation/
 *.png
 *.jpg
 *.rrd
+test/data/

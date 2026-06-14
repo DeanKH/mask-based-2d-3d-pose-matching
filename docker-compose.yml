@@ -40,9 +40,9 @@ services:
     entrypoint: ["/opt/build/pose_cache_builder"]
     command: [
       "--camera", "/workspace/camera_info.json",
-      "--model", "/workspace/mask-generation/model/ad.step",
+      "--model", "/workspace/mask-generation/model/nape-pro.step",
       "--scale", "0.001",
-      "--output", "/workspace/cache/ad.bin",
+      "--output", "/workspace/cache/nape-pro.bin",
       "--depth-min", "0.10",
       "--depth-max", "0.30",
       "--depth-steps", "10",
@@ -59,8 +59,8 @@ services:
     entrypoint: ["/opt/build/pose_matching_cached"]
     environment:
       - OBJECT_NAME=${OBJECT_NAME:-ad}
-      - SORT_METRIC=${SORT_METRIC:-iou}
-      - REFINE_METHOD=${REFINE_METHOD:-bobyqa}
+      - SORT_METRIC=${SORT_METRIC:-centroid_iou}
+      - REFINE_METHOD=${REFINE_METHOD:-nelder_mead}
     deploy:
       resources:
         reservations:
@@ -69,13 +69,13 @@ services:
               count: 1
               capabilities: [gpu]
     command: [
-      "--model", "/workspace/mask-generation/model/${OBJECT_NAME:-ad}.step",
-      "--image", "/workspace/input/${OBJECT_NAME:-ad}/rgb.png",
-      "--mask", "/workspace/input/${OBJECT_NAME:-ad}/mask.png",
+      "--model", "/workspace/mask-generation/model/${OBJECT_NAME}.step",
+      "--image", "/workspace/input/${OBJECT_NAME}/rgb.png",
+      "--mask", "/workspace/input/${OBJECT_NAME}/mask.png",
       "--camera", "/workspace/camera_info.json",
       "--scale", "0.001",
-      "--cache", "/workspace/cache/${OBJECT_NAME:-ad}.bin",
-      "--output", "/workspace/result/${OBJECT_NAME:-ad}/result_cached.png",
+      "--cache", "/workspace/cache/${OBJECT_NAME}.bin",
+      "--output", "/workspace/result/${OBJECT_NAME}/result_cached.png",
       # "--rerun", "/workspace/record",
       "--max-candidates", "30",
       "--max-refine", "300",
@@ -83,11 +83,41 @@ services:
       "--xatol", "1e-4",
       "--contour-points", "4000",
       "--lm-tolerance", "1e-9",
-      "--refine-method", "${REFINE_METHOD:-bobyqa}",
+      "--refine-method", "${REFINE_METHOD}",
       # "--early-termination-iou", "0.95",
       # "--int-mask", "/workspace/int",
-      "--sort-metric", "${SORT_METRIC:-centroid_iou}",
+      "--sort-metric", "${SORT_METRIC}",
       # "--use-cpu"
+    ]
+
+  benchmark:
+    build: .
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - .:/workspace
+    entrypoint: ["/opt/build/benchmark"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: [
+      "--dataset", "/workspace/test/data",
+      "--camera", "/workspace/camera_info.json",
+      "--model-dir", "/workspace/mask-generation/model",
+      "--cache-dir", "/workspace/cache",
+      "--output-dir", "/workspace/benchmark",
+      "--scale", "0.001",
+      "--max-candidates", "30",
+      "--max-refine", "300",
+      "--fatol", "1e-4",
+      "--xatol", "1e-4",
+      "--contour-points", "4000",
+      "--refine-method", "nelder-mead",
+      "--sort-metric", "centroid_iou",
     ]
 
   visualize-poses:

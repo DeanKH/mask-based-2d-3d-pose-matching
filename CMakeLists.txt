@@ -122,6 +122,37 @@ if(ENABLE_PROFILER)
     target_compile_definitions(pose_matching_cached PRIVATE ENABLE_PROFILER)
 endif()
 
+add_executable(benchmark src/benchmark_main.cpp
+    src/cached_pose_estimator.cpp
+    src/contour_sampler.cpp
+    src/refine_lm.cpp
+    src/rerun_visualizer.cpp)
+
+target_include_directories(benchmark PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(benchmark
+    PRIVATE
+        maskgen
+        cache_lib
+        ${OpenCV_LIBS}
+        nlohmann_json::nlohmann_json
+        rerun_sdk
+        OpenMP::OpenMP_CXX
+        ${NLOPT_LIBRARY}
+)
+
+if(GTSAM_FOUND)
+    target_link_libraries(benchmark PRIVATE ${GTSAM_LIBRARY} tbb)
+    target_include_directories(benchmark PRIVATE ${GTSAM_INCLUDE_DIR} ${EIGEN3_INCLUDE_DIR})
+endif()
+
+if(ENABLE_PROFILER)
+    target_link_libraries(benchmark PRIVATE ${PROFILER_LIB})
+    target_compile_definitions(benchmark PRIVATE ENABLE_PROFILER)
+endif()
+
 add_executable(visualize_poses src/visualize_poses_main.cpp)
 
 target_include_directories(visualize_poses PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
