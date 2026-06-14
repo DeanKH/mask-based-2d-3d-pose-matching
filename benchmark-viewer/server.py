@@ -61,7 +61,11 @@ def discover_runs(benchmark_dir: str) -> list[dict]:
                 "trans_mean": trans_stats.get("mean", 0),
                 "rot_mean": rot_stats.get("mean", 0),
                 "total_samples": summary.get("total_samples", 0),
-                "successful": summary.get("successful", 0),
+                "successful": sum(
+                    1
+                    for v in data.get("results", {}).values()
+                    if v.get("iou", 0) >= 0.95
+                ),
             })
         except (json.JSONDecodeError, KeyError) as e:
             print(f"WARNING: Failed to parse {result_json}: {e}")
@@ -121,7 +125,7 @@ def api_compare():
 
 @app.route("/overlay/<run_id>/<path:sample_path>")
 def serve_overlay(run_id, sample_path):
-    overlay = Path(BENCHMARK_DIR) / run_id / sample_path / "final_overlay.png"
+    overlay = Path(BENCHMARK_DIR) / run_id / sample_path
     if not overlay.is_file():
         return jsonify({"error": "not found"}), 404
     return send_file(str(overlay), mimetype="image/png")

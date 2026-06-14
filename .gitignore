@@ -6,3 +6,4 @@ interactive-3d-annotation/
 *.jpg
 *.rrd
 test/data/
+benchmark/

@@ -51,6 +51,11 @@
     .badge-green { background: #d4edda; color: #155724; }
     .badge-orange { background: #fff3cd; color: #856404; }
     .badge-red { background: #f8d7da; color: #721c24; }
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable:hover { background: #e8e8ff; }
+    th.sortable::after { content: ' \21C5'; font-size: 10px; color: #aaa; }
+    th.sort-asc::after { content: ' \25B2'; font-size: 10px; color: #4a3aff; }
+    th.sort-desc::after { content: ' \25BC'; font-size: 10px; color: #4a3aff; }
   </style>
 </head>
 <body>
@@ -129,9 +134,58 @@
     }
 
     // Overview
+    let sortState = { key: null, dir: 1 };
+    const sortAccessors = {
+      id: r => r.id,
+      method: r => r.refine_method,
+      candidates: r => (r.params || {}).max_candidates || 0,
+      max_refine: r => (r.params || {}).max_refine || 0,
+      use_cpu: r => (r.params || {}).use_cpu ? 1 : 0,
+      sort_metric: r => (r.params || {}).sort_metric || '',
+      iou_mean: r => r.iou_mean,
+      iou_median: r => r.iou_median,
+      iou_min: r => r.iou_min,
+      iou_max: r => r.iou_max,
+      time_mean: r => r.time_mean,
+      time_total: r => r.time_total,
+      trans_mean: r => r.trans_mean,
+      rot_mean: r => r.rot_mean,
+      successful: r => r.successful,
+    };
+
+    function sortBy(key) {
+      if (sortState.key === key) {
+        sortState.dir *= -1;
+      } else {
+        sortState.key = key;
+        sortState.dir = 1;
+      }
+      renderOverview();
+    }
+
+    function getSortedRuns() {
+      const sorted = [...runs];
+      if (sortState.key) {
+        const acc = sortAccessors[sortState.key];
+        sorted.sort((a, b) => {
+          const va = acc(a), vb = acc(b);
+          if (typeof va === 'string') return va.localeCompare(vb) * sortState.dir;
+          return (va - vb) * sortState.dir;
+        });
+      }
+      return sorted;
+    }
+
+    function th(key, label, cls='') {
+      const c = sortState.key === key ? (sortState.dir > 0 ? 'sort-asc' : 'sort-desc') : '';
+      return `<th class="sortable ${c} ${cls}" onclick="sortBy('${key}')">${label}</th>`;
+    }
+
     function renderOverview() {
+      const sortedRuns = getSortedRuns();
+
       let cards = '<div style="margin-bottom:20px">';
-      for (const r of runs) {
+      for (const r of sortedRuns.slice(0, 3)) {
         cards += `
           <div class="summary-card">
             <div class="label">${r.refine_method} | ${r.timestamp}</div>
@@ -144,14 +198,23 @@
 
       let table = `<table>
         <thead><tr>
-          <th>Run</th><th>Method</th><th>Candidates</th><th>Max Refine</th>
-          <th>Use CPU</th><th>Sort Metric</th>
-          <th class="num">IoU mean</th><th class="num">IoU median</th><th class="num">IoU min</th><th class="num">IoU max</th>
-          <th class="num">Time mean (ms)</th><th class="num">Time total (ms)</th>
-          <th class="num">Trans err (m)</th><th class="num">Rot err (deg)</th>
-          <th>Success</th>
+          ${th('id','Run')}
+          ${th('method','Method')}
+          ${th('candidates','Candidates')}
+          ${th('max_refine','Max Refine')}
+          ${th('use_cpu','Use CPU')}
+          ${th('sort_metric','Sort Metric')}
+          ${th('iou_mean','IoU mean','num')}
+          ${th('iou_median','IoU median','num')}
+          ${th('iou_min','IoU min','num')}
+          ${th('iou_max','IoU max','num')}
+          ${th('time_mean','Time mean (ms)','num')}
+          ${th('time_total','Time total (ms)','num')}
+          ${th('trans_mean','Trans err (m)','num')}
+          ${th('rot_mean','Rot err (deg)','num')}
+          ${th('successful','Success')}
         </tr></thead><tbody>`;
-      for (const r of runs) {
+      for (const r of sortedRuns) {
         const p = r.params || {};
         table += `<tr>
           <td class="run-id">${r.id}</td>

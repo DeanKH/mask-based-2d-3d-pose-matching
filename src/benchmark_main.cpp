@@ -350,11 +350,17 @@ int main(int argc, char* argv[]) {
   std::string sort_metric_tag = "iou";
   switch (cfg.est_params.sort_metric) {
     case pose_matching::CandidateSortMetric::IoU: sort_metric_tag = "iou"; break;
+    case pose_matching::CandidateSortMetric::HuMoments: sort_metric_tag = "hu"; break;
+    case pose_matching::CandidateSortMetric::ZernikeMoments: sort_metric_tag = "zernike"; break;
+    case pose_matching::CandidateSortMetric::IoUZernikeMoments: sort_metric_tag = "iou_zernike"; break;
     case pose_matching::CandidateSortMetric::CentroidIoU: sort_metric_tag = "centroid_iou"; break;
     case pose_matching::CandidateSortMetric::CentroidDT_L1: sort_metric_tag = "centroid_dt_l1"; break;
     case pose_matching::CandidateSortMetric::CentroidDT_L2: sort_metric_tag = "centroid_dt_l2"; break;
     case pose_matching::CandidateSortMetric::DT_IoU: sort_metric_tag = "dt_iou"; break;
-    default: sort_metric_tag = "other"; break;
+    case pose_matching::CandidateSortMetric::CentralMoments: sort_metric_tag = "central_moments"; break;
+    case pose_matching::CandidateSortMetric::ShapeContext: sort_metric_tag = "shape_context"; break;
+    case pose_matching::CandidateSortMetric::ContourChamfer: sort_metric_tag = "contour_chamfer"; break;
+    case pose_matching::CandidateSortMetric::FourierDescriptor: sort_metric_tag = "fourier"; break;
   }
 
   fs::path out_folder = cfg.output_dir / (timestamp + "_" + refine_tag);
@@ -404,7 +410,9 @@ int main(int argc, char* argv[]) {
     for (const auto& mask_path : og.mask_paths) {
       fs::path sample_dir = mask_path.parent_path();
       auto rel = fs::relative(sample_dir, cfg.dataset);
-      std::string sample_id = og.object_name + "/" + rel.string();
+      fs::path rel_full =
+          rel.has_parent_path() ? rel : fs::path(og.object_name) / rel;
+      std::string sample_id = rel_full.string();
 
       fs::path rgb_path = sample_dir / "rgb.png";
       fs::path pose_gt_path = sample_dir / "pose.json";
@@ -467,7 +475,7 @@ int main(int argc, char* argv[]) {
             cv::Mat result_mask = overlay_gen.Generate(mesh, mp);
             cv::Mat overlay = RenderOverlay(rgb, result_mask);
 
-            fs::path overlay_path = out_folder / rel / "final_overlay.png";
+            fs::path overlay_path = out_folder / rel_full / "final_overlay.png";
             fs::create_directories(overlay_path.parent_path());
             cv::imwrite(overlay_path.string(), overlay);
           }
