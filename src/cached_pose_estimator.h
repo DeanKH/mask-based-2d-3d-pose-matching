@@ -56,7 +56,8 @@ class CachedPoseEstimator {
                           const BobyqaOptions& bobyqa_opts,
                           RefineMethod refine_method, int refine_index,
                           maskgen::MaskGenerator* generator,
-                          const std::atomic<bool>* abort_flag = nullptr);
+                          const std::atomic<bool>* abort_flag = nullptr,
+                          bool force_cpu = false);
 
   CacheData cache_;
   std::vector<cv::Mat> decoded_coarse_masks_;

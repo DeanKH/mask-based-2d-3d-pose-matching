@@ -60,7 +60,14 @@ services:
     environment:
       - OBJECT_NAME=${OBJECT_NAME:-ad}
       - SORT_METRIC=${SORT_METRIC:-iou}
-      - REFINE_METHOD=${REFINE_METHOD:-nelder-mead}
+      - REFINE_METHOD=${REFINE_METHOD:-bobyqa}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     command: [
       "--model", "/workspace/mask-generation/model/${OBJECT_NAME:-ad}.step",
       "--image", "/workspace/input/${OBJECT_NAME:-ad}/rgb.png",
@@ -71,14 +78,16 @@ services:
       "--output", "/workspace/result/${OBJECT_NAME:-ad}/result_cached.png",
       # "--rerun", "/workspace/record",
       "--max-candidates", "30",
+      "--max-refine", "300",
       "--fatol", "1e-4",
-      "--xatol", "1e-3",
+      "--xatol", "1e-4",
       "--contour-points", "4000",
       "--lm-tolerance", "1e-9",
-      "--refine-method", "${REFINE_METHOD:-nelder-mead}",
-      "--early-termination-iou", "0.95",
+      "--refine-method", "${REFINE_METHOD:-bobyqa}",
+      # "--early-termination-iou", "0.95",
       # "--int-mask", "/workspace/int",
-      "--sort-metric", "${SORT_METRIC:-centroid_iou}"
+      "--sort-metric", "${SORT_METRIC:-centroid_iou}",
+      # "--use-cpu"
     ]
 
   visualize-poses:

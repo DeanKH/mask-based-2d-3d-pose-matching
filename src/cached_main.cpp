@@ -41,6 +41,7 @@ static void PrintUsage(const char* program) {
        << "  --xatol FLOAT        NM parameter tolerance (default: 1e-3)\n"
        << "  --patience INT       NM stagnation patience (default: 10)\n"
        << "  --refine-method STR  Refine method: lm, gn, nelder-mead, bobyqa (default: lm)\n"
+      << "  --use-cpu            Force CPU (OpenCV) cost evaluation instead of GPU compute shader\n"
        << "  --contour-points INT Number of contour sample points (default: 1000)\n"
        << "  --lm-iterations INT  LM/GN max iterations (default: 100)\n"
         << "  --lm-tolerance FLOAT LM/GN convergence tolerance (default: 1e-6)\n"
@@ -123,6 +124,8 @@ int main(int argc, char* argv[]) {
       else if (m == "nelder-mead" || m == "nm") est_params.refine_method = pose_matching::RefineMethod::NelderMead;
       else if (m == "bobyqa") est_params.refine_method = pose_matching::RefineMethod::BOBYQA;
       else { std::cerr << "Error: unknown refine method: " << m << "\n"; return 1; }
+    } else if (arg == "--use-cpu") {
+      est_params.use_cpu = true;
     } else if (arg == "--contour-points") {
       if (++i >= args.size()) return 1;
       est_params.contour_points = std::stoi(args[i]);

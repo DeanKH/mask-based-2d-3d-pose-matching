@@ -771,8 +771,9 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
                                               const BobyqaOptions& bobyqa_opts,
                                               RefineMethod refine_method,
                                               int refine_index,
-                                              maskgen::MaskGenerator* generator,
-                                              const std::atomic<bool>* abort_flag) {
+                                               maskgen::MaskGenerator* generator,
+                                               const std::atomic<bool>* abort_flag,
+                                               bool force_cpu) {
   std::vector<double> x = {initial.pose.tx, initial.pose.ty, initial.pose.tz,
                            initial.pose.rx, initial.pose.ry, initial.pose.rz};
 
@@ -818,7 +819,7 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
     mp.ry = p.ry;
     mp.rz = p.rz;
 
-    bool use_gpu = generator->HasComputeCost() && !viz_;
+    bool use_gpu = generator->HasComputeCost() && !viz_ && !force_cpu;
 
     double c;
 
@@ -930,7 +931,7 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
   mp.rz = refined.rz;
 
   double final_iou;
-  if (generator->HasComputeCost() && !viz_) {
+  if (generator->HasComputeCost() && !viz_ && !force_cpu) {
     auto result = generator->GeneratePoseWithCost(
         mp, static_cast<float>(scale_factor));
     double denom = static_cast<double>(result.rendered_area) + area_input -
@@ -1229,7 +1230,7 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
     for (int t = 0; t < actual_threads; ++t) {
       thread_generators[t] = std::make_unique<maskgen::MaskGenerator>(camera_params_);
       thread_generators[t]->SetMesh(mesh_);
-      if (thread_generators[t]->HasComputeCost()) {
+      if (thread_generators[t]->HasComputeCost() && !params.use_cpu) {
         thread_generators[t]->SetCostInputs(dt_input, binary_mask);
         std::cout << "[GPU] Thread " << t << " using GPU compute cost\n";
       } else {
@@ -1249,7 +1250,8 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
         refine_results[i] = RefinePose(refine_candidates[i], binary_mask, dt_input,
                                        params.nelder_mead_iterations, params.nm_options,
                                        params.bobyqa_options, params.refine_method, i,
-                                       thread_generators[thread_id].get(), &early_stop);
+                                       thread_generators[thread_id].get(), &early_stop,
+                                       params.use_cpu);
         std::cout << "[Timing] RefinePose " << method_tag << " candidate #" << i << " iou " << refine_results[i].iou << "\n";
         if (refine_results[i].iou >= params.early_termination_iou) {
           std::cout << "[EarlyTermination] IoU " << refine_results[i].iou
