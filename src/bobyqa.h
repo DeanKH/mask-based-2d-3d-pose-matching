@@ -12,6 +12,8 @@ namespace pose_matching {
 struct BobyqaOptions {
   double xtol_rel = 1e-4;
   double ftol_rel = 0.0;
+  int population = 0;
+  double initial_step_scale = 1.3;
 };
 
 namespace detail {
@@ -65,10 +67,16 @@ inline double Bobyqa(std::function<double(const std::vector<double>&)> cost,
 
   nlopt_set_min_objective(opt, detail::bobyqa_callback, &ctx);
 
-  if (!initial_step.empty()) {
+  if (opts.population > 0) {
+    nlopt_set_population(opt, opts.population);
+  }
+
+  std::vector<double> eff_step = initial_step;
+  if (!eff_step.empty()) {
     std::vector<double> step(n);
     for (unsigned i = 0; i < n; ++i) {
-      step[i] = i < initial_step.size() ? initial_step[i] : 0.1;
+      double base = i < eff_step.size() ? eff_step[i] : 0.1;
+      step[i] = base * opts.initial_step_scale;
     }
     nlopt_set_initial_step(opt, step.data());
   }

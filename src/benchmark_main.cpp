@@ -48,6 +48,8 @@ static void PrintUsage(const char* program) {
       << "  --lm-tolerance FLOAT LM/GN convergence tolerance (default: 1e-6)\n"
       << "  --early-termination-iou FLOAT  Stop refining when IoU exceeds this (default: disabled)\n"
       << "  --sort-metric STR    Sort metric: iou, centroid_iou, etc. (default: iou)\n"
+      << "  --bobyqa-population INT  BOBYQA interpolation points: 0=auto(2n+1), 28=full quadratic (default: 0)\n"
+      << "  --bobyqa-step-scale FLOAT  BOBYQA initial step scale factor (default: 1.0)\n"
       << "  -h, --help           Show this help\n";
 }
 
@@ -292,6 +294,10 @@ int main(int argc, char* argv[]) {
       else if (sm == "contour_chamfer") cfg.est_params.sort_metric = pose_matching::CandidateSortMetric::ContourChamfer;
       else if (sm == "fourier") cfg.est_params.sort_metric = pose_matching::CandidateSortMetric::FourierDescriptor;
       else { std::cerr << "Error: unknown sort metric: " << sm << "\n"; return 1; }
+    } else if (arg == "--bobyqa-population") {
+      cfg.est_params.bobyqa_options.population = std::stoi(args[++i]);
+    } else if (arg == "--bobyqa-step-scale") {
+      cfg.est_params.bobyqa_options.initial_step_scale = std::stod(args[++i]);
     } else {
       std::cerr << "Error: unknown option: " << arg << "\n";
       PrintUsage(args[0].c_str());
@@ -529,6 +535,8 @@ int main(int argc, char* argv[]) {
       {"use_cpu", cfg.est_params.use_cpu},
       {"early_termination_iou", cfg.est_params.early_termination_iou},
       {"sort_metric", sort_metric_tag},
+      {"bobyqa_population", cfg.est_params.bobyqa_options.population},
+      {"bobyqa_step_scale", cfg.est_params.bobyqa_options.initial_step_scale},
   };
   results_json["summary"] = {
       {"total_samples", all_results.size()},

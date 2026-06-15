@@ -14,6 +14,11 @@ for refine in "${REFINE_METHODS[@]}"; do
       COUNT=$((COUNT + 1))
       echo "[$COUNT/$TOTAL] refine=$refine  sort=$metric  candidates=$cand"
 
+      EXTRA_FLAGS=""
+      if [ "$refine" = "bobyqa" ]; then
+        EXTRA_FLAGS="--bobyqa-step-scale 1.3"
+      fi
+
       docker compose run --rm \
         --entrypoint /opt/build/benchmark \
         benchmark \
@@ -29,7 +34,8 @@ for refine in "${REFINE_METHODS[@]}"; do
         --xatol 1e-4 \
         --contour-points 4000 \
         --refine-method "$refine" \
-        --sort-metric "$metric"
+        --sort-metric "$metric" \
+        $EXTRA_FLAGS
     done
   done
 done
