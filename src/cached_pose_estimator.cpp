@@ -1224,7 +1224,8 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
     const char* method_tag = (params.refine_method == RefineMethod::BOBYQA) ? "BOBYQA" : "NM";
     const unsigned int hw_threads = std::thread::hardware_concurrency();
     const int num_threads = std::max(1, static_cast<int>(hw_threads)-2);
-    const int actual_threads = std::min(num_threads, refine_count);
+    const bool use_gpu = generator_->HasComputeCost() && !params.use_cpu;
+    const int actual_threads = use_gpu ? 1 : std::min(num_threads, refine_count);
 
     std::vector<std::unique_ptr<maskgen::MaskGenerator>> thread_generators(actual_threads);
     for (int t = 0; t < actual_threads; ++t) {
