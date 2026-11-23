@@ -72,12 +72,22 @@ docker compose run --rm pose-matching
 --output-pose PATH   出力姿勢JSON (デフォルト: pose_result.json)
 --depth-min FLOAT    探索深度最小 [m] (デフォルト: 0.05)
 --depth-max FLOAT    探索深度最大 [m] (デフォルト: 0.50)
---directions INT     方向サンプル数 (デフォルト: 48)
+--directions INT    方向サンプル数 (デフォルト: 48)
 --in-plane INT       面内回転サンプル数 (デフォルト: 4)
 --depth-steps INT    深度サンプル数 (デフォルト: 5)
 --top-k INT          coarse候補数 (デフォルト: 10)
 --max-refine INT     Nelder-Mead最大反復 (デフォルト: 200)
 --rerun [DIR]        Rerun可視化を有効化、.rrdファイルをDIRに保存
+
+候補姿勢の制約 (docs/constraint.md 参照)
+--axis-constraint SPEC  軸方向制約 (繰り返し可、例: "z:0,0,-1:30")
+--tx-range MIN:MAX   モデル原点txの許容範囲 [m]
+--ty-range MIN:MAX   モデル原点tyの許容範囲 [m]
+--nominal-position X,Y,Z  原点のノミナル位置 (tx/tyをグリッドサンプル)
+--nominal-tol DX,DY,DZ    グリッド半径 (デフォルト: 0.02,0.02,0.03)
+--nominal-grid INT   tx/tyグリッドサンプル数 (デフォルト: 3)
+--no-fallback        制約なし再試行 (フォールバック) を無効化
+--fallback-iou FLOAT フォールバック発動のIoU閾値 (デフォルト: 0.70)
 ```
 
 #### 引数を変更する例

@@ -38,6 +38,18 @@ static void PrintUsage(const char* program) {
       << "  --top-k INT          Top K candidates for refinement (default: 10)\n"
       << "  --max-refine INT     Max refinement iterations (default: 200)\n"
        << "  --rerun [DIR]        Enable rerun visualization, save to DIR (default: .)\n"
+      << "\nCandidate pose constraints (speed up search by restricting poses):\n"
+      << "  --axis-constraint SPEC  Axis direction constraint, repeatable (e.g. \"z:0,0,-1:30\"\n"
+      << "                          = model +Z within 30 deg of camera dir (0,0,-1))\n"
+      << "  --tx-range MIN:MAX   Model origin tx allowed range in meters\n"
+      << "  --ty-range MIN:MAX   Model origin ty allowed range in meters\n"
+      << "  --nominal-position X,Y,Z  Sample tx/ty on a grid around this model origin\n"
+      << "                          position (meters, camera frame) instead of deriving\n"
+      << "                          them from the mask centroid\n"
+      << "  --nominal-tol DX,DY,DZ   Nominal grid half-extents (default: 0.02,0.02,0.03)\n"
+      << "  --nominal-grid INT   tx/ty grid samples per axis (default: 3 = -tol,0,+tol)\n"
+      << "  --no-fallback        Disable unconstrained retry on low IoU\n"
+      << "  --fallback-iou FLOAT Retry without constraints when final IoU < this (default: 0.70)\n"
       << "  -h, --help           Show this help\n";
 }
 
@@ -111,6 +123,82 @@ int main(int argc, char* argv[]) {
     } else if (arg == "--max-refine") {
       if (++i >= args.size()) return 1;
       est_params.nelder_mead_iterations = std::stoi(args[i]);
+    } else if (arg == "--axis-constraint") {
+      if (++i >= args.size()) {
+        std::cerr << "Error: --axis-constraint requires a spec like \"z:0,0,-1:30\"\n";
+        return 1;
+      }
+      pose_matching::AxisConstraint ac;
+      if (!pose_matching::ParseAxisConstraintSpec(args[i], ac)) {
+        std::cerr << "Error: invalid axis constraint spec: " << args[i]
+                  << " (expected \"x|y|z:dx,dy,dz:max_deg\")\n";
+        return 1;
+      }
+      if (est_params.axis_constraints.size() >= 4) {
+        std::cerr << "Error: too many --axis-constraint entries (max 4)\n";
+        return 1;
+      }
+      est_params.axis_constraints.push_back(ac);
+      std::cout << "Axis constraint: " << pose_matching::AxisConstraintToString(ac) << "\n";
+    } else if (arg == "--tx-range") {
+      if (++i >= args.size()) return 1;
+      double lo, hi;
+      if (!pose_matching::ParseRangeSpec(args[i], lo, hi)) {
+        std::cerr << "Error: invalid --tx-range: " << args[i] << " (expected MIN:MAX)\n";
+        return 1;
+      }
+      est_params.has_tx_range = true;
+      est_params.tx_min = lo;
+      est_params.tx_max = hi;
+    } else if (arg == "--ty-range") {
+      if (++i >= args.size()) return 1;
+      double lo, hi;
+      if (!pose_matching::ParseRangeSpec(args[i], lo, hi)) {
+        std::cerr << "Error: invalid --ty-range: " << args[i] << " (expected MIN:MAX)\n";
+        return 1;
+      }
+      est_params.has_ty_range = true;
+      est_params.ty_min = lo;
+      est_params.ty_max = hi;
+    } else if (arg == "--nominal-position") {
+      if (++i >= args.size()) return 1;
+      double v[3];
+      if (!pose_matching::ParseVec3Spec(args[i], v)) {
+        std::cerr << "Error: invalid --nominal-position: " << args[i]
+                  << " (expected X,Y,Z in meters)\n";
+        return 1;
+      }
+      est_params.use_nominal_position = true;
+      est_params.nominal_tx = v[0];
+      est_params.nominal_ty = v[1];
+      est_params.nominal_tz = v[2];
+    } else if (arg == "--nominal-tol") {
+      if (++i >= args.size()) return 1;
+      double v[3];
+      if (!pose_matching::ParseVec3Spec(args[i], v) || v[0] < 0 || v[1] < 0 || v[2] < 0) {
+        std::cerr << "Error: invalid --nominal-tol: " << args[i]
+                  << " (expected DX,DY,DZ >= 0 in meters)\n";
+        return 1;
+      }
+      est_params.nominal_tol_tx = v[0];
+      est_params.nominal_tol_ty = v[1];
+      est_params.nominal_tol_tz = v[2];
+    } else if (arg == "--nominal-grid") {
+      if (++i >= args.size()) return 1;
+      est_params.nominal_grid = std::stoi(args[i]);
+      if (est_params.nominal_grid < 1) {
+        std::cerr << "Error: --nominal-grid must be >= 1\n";
+        return 1;
+      }
+    } else if (arg == "--no-fallback") {
+      est_params.fallback_unconstrained = false;
+    } else if (arg == "--fallback-iou") {
+      if (++i >= args.size()) return 1;
+      est_params.fallback_iou = std::stod(args[i]);
+      if (est_params.fallback_iou <= 0.0 || est_params.fallback_iou > 1.0) {
+        std::cerr << "Error: --fallback-iou must be in (0, 1]\n";
+        return 1;
+      }
     } else if (arg == "--rerun") {
       if (i + 1 < args.size() && args[i + 1][0] != '-') {
         rerun_dir = args[++i];
@@ -164,6 +252,37 @@ int main(int argc, char* argv[]) {
             << " depths = "
             << est_params.num_directions * est_params.num_in_plane * est_params.num_depth
             << " candidates\n";
+  if (!est_params.axis_constraints.empty()) {
+    std::cout << "Axis constraints: " << est_params.axis_constraints.size() << "\n";
+    for (const auto& ac : est_params.axis_constraints) {
+      std::cout << "  - " << pose_matching::AxisConstraintToString(ac) << "\n";
+    }
+  }
+  if (est_params.has_tx_range || est_params.has_ty_range) {
+    std::cout << "Origin range: "
+              << (est_params.has_tx_range
+                      ? "tx[" + std::to_string(est_params.tx_min) + "," +
+                            std::to_string(est_params.tx_max) + "] "
+                      : "")
+              << (est_params.has_ty_range
+                      ? "ty[" + std::to_string(est_params.ty_min) + "," +
+                            std::to_string(est_params.ty_max) + "]"
+                      : "")
+              << "\n";
+  }
+  if (est_params.use_nominal_position) {
+    std::cout << "Nominal position: (" << est_params.nominal_tx << ","
+              << est_params.nominal_ty << "," << est_params.nominal_tz << ") tol=("
+              << est_params.nominal_tol_tx << "," << est_params.nominal_tol_ty << ","
+              << est_params.nominal_tol_tz << ") grid=" << est_params.nominal_grid << "x"
+              << est_params.nominal_grid << "\n";
+  }
+  std::cout << "Fallback: "
+            << (est_params.fallback_unconstrained
+                    ? "enabled (retry unconstrained if IoU < " +
+                          std::to_string(est_params.fallback_iou) + ")"
+                    : "disabled")
+            << "\n";
 
   try {
     auto t_load_start = std::chrono::high_resolution_clock::now();

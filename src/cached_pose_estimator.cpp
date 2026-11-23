@@ -5,11 +5,13 @@
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <numeric>
 #include <set>
 #include <sstream>
@@ -387,6 +389,19 @@ CachedPoseEstimator::CachedPoseEstimator(
   std::cout << "  Coarse entries: " << cache_.coarse_entries.size() << "\n";
   std::cout << "  Local entries: " << cache_.local_entries.size() << "\n";
   std::cout << "  Mask data: " << cache_.mask_data.size() / (1024.0 * 1024.0) << " MB\n";
+  if (cache_.header.version >= 2 && cache_.header.num_axis_constraints > 0) {
+    std::cout << "  Cache axis constraints: " << cache_.header.num_axis_constraints << "\n";
+    for (uint32_t k = 0; k < cache_.header.num_axis_constraints; ++k) {
+      const auto& cc = cache_.header.axis_constraints[k];
+      AxisConstraint ac;
+      ac.axis = cc.axis;
+      ac.ref_dir[0] = cc.ref_dir[0];
+      ac.ref_dir[1] = cc.ref_dir[1];
+      ac.ref_dir[2] = cc.ref_dir[2];
+      ac.max_angle_deg = cc.max_angle_deg;
+      std::cout << "    - " << AxisConstraintToString(ac) << "\n";
+    }
+  }
 
   camera_params_ = camera_params;
   camera_params_.eye_x = 0;
@@ -525,60 +540,172 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
   double u_cx = m.m10 / m.m00;
   double v_cy = m.m01 / m.m00;
 
-  double shift_u = u_cx - cache_.header.cx;
-  double shift_v = v_cy - cache_.header.cy;
+  const bool nominal = params.use_nominal_position;
+  const double fx = cache_.header.fx;
+  const double fy = cache_.header.fy;
+
+  // center ± tol を n 分割した等間隔グリッド (n=1 は中心のみ)
+  auto make_grid = [](double center, double tol, int n) {
+    std::vector<double> vals;
+    if (n <= 1) {
+      vals.push_back(center);
+      return vals;
+    }
+    for (int i = 0; i < n; ++i) {
+      vals.push_back(center - tol + (2.0 * tol) * i / (n - 1));
+    }
+    return vals;
+  };
+
+  // ノミナルモード: 原点 tx/ty グリッド (範囲制約で先に絞っておく)
+  std::vector<double> grid_tx, grid_ty;
+  if (nominal) {
+    grid_tx = make_grid(params.nominal_tx, params.nominal_tol_tx, params.nominal_grid);
+    grid_ty = make_grid(params.nominal_ty, params.nominal_tol_ty, params.nominal_grid);
+    if (params.has_tx_range) {
+      grid_tx.erase(std::remove_if(grid_tx.begin(), grid_tx.end(),
+                                   [&](double v) {
+                                     return v < params.tx_min || v > params.tx_max;
+                                   }),
+                    grid_tx.end());
+    }
+    if (params.has_ty_range) {
+      grid_ty.erase(std::remove_if(grid_ty.begin(), grid_ty.end(),
+                                   [&](double v) {
+                                     return v < params.ty_min || v > params.ty_max;
+                                   }),
+                    grid_ty.end());
+    }
+    if (grid_tx.empty() || grid_ty.empty()) {
+      std::cout << "[Constraints] nominal grid fully excluded by tx/ty range\n";
+      return {};
+    }
+  }
+
+  // 評価コンボ: 非ノミナルは entry 1つずつ、ノミナルは entry x grid 点。
+  struct CoarseCombo {
+    int entry_idx;
+    double tx, ty;  // このコンボのモデル原点 x/y
+    double du, dv;  // ピクセルシフト量
+  };
 
   int n_entries = static_cast<int>(cache_.coarse_entries.size());
-  int input_count = cv::countNonZero(input_mask);
-  int du = static_cast<int>(std::round(shift_u));
-  int dv = static_cast<int>(std::round(shift_v));
+  size_t axis_skipped = 0, range_skipped = 0, nominal_z_skipped = 0;
 
-  // Phase 1: Low-res IoU for all entries
+  std::vector<CoarseCombo> combos;
+  combos.reserve(nominal ? static_cast<size_t>(n_entries) : n_entries);
+  for (int ei = 0; ei < n_entries; ++ei) {
+    const auto& entry = cache_.coarse_entries[ei];
+
+    // 軸制約外の回転は評価しない
+    if (!RotationSatisfiesAxisConstraints(entry.rx, entry.ry, entry.rz,
+                                          params.axis_constraints)) {
+      ++axis_skipped;
+      continue;
+    }
+
+    // 要求深度範囲外のエントリは評価しない
+    // (キャッシュは要求範囲を包含している前提。カバレッジ検証は EstimateImpl で実施)
+    if (entry.depth < params.depth_min - 1e-9 ||
+        entry.depth > params.depth_max + 1e-9) {
+      continue;
+    }
+
+    double tz_total = entry.depth;
+    if (tz_total <= 0) continue;
+
+    if (nominal) {
+      // 原点Zがノミナル箱外のエントリは評価しない
+      double oz = tz_total - entry.crot_z;
+      if (oz < params.nominal_tz - params.nominal_tol_tz - 1e-9 ||
+          oz > params.nominal_tz + params.nominal_tol_tz + 1e-9) {
+        ++nominal_z_skipped;
+        continue;
+      }
+      for (double tx : grid_tx) {
+        for (double ty : grid_ty) {
+          // キャッシュマスクは重心が画像中心にくる位置でレンダリング済み。
+          // 原点を (tx, ty) に置くシフト量を透視投影で近似する。
+          double du = fx * (entry.crot_x + tx) / tz_total;
+          double dv = fy * (entry.crot_y + ty) / tz_total;
+          combos.push_back({ei, tx, ty, du, dv});
+        }
+      }
+    } else {
+      double tx = (u_cx - cache_.header.cx) * tz_total / fx - entry.crot_x;
+      double ty = (v_cy - cache_.header.cy) * tz_total / fy - entry.crot_y;
+      if ((params.has_tx_range && (tx < params.tx_min || tx > params.tx_max)) ||
+          (params.has_ty_range && (ty < params.ty_min || ty > params.ty_max))) {
+        ++range_skipped;
+        continue;
+      }
+      combos.push_back({ei, tx, ty, u_cx - cache_.header.cx, v_cy - cache_.header.cy});
+    }
+  }
+
+  if (EstimationHasConstraints(params)) {
+    std::cout << "[Constraints] CachedCoarseSearch: " << combos.size()
+              << " combo(s) kept, " << axis_skipped << " axis-skipped, "
+              << range_skipped << " range-skipped, " << nominal_z_skipped
+              << " nominal-z-skipped entries\n";
+  }
+
+  int n_combos = static_cast<int>(combos.size());
+  if (n_combos == 0) return {};
+
+  int input_count = cv::countNonZero(input_mask);
+
+  // Phase 1: Low-res IoU for all combos
   cv::Mat input_mask_small;
   cv::resize(input_mask, input_mask_small, cv::Size(small_w_, small_h_), 0, 0, cv::INTER_NEAREST);
   int input_count_small = cv::countNonZero(input_mask_small);
-  int du_small = static_cast<int>(std::round(static_cast<double>(du) / 4.0));
-  int dv_small = static_cast<int>(std::round(static_cast<double>(dv) / 4.0));
 
-  std::vector<int> lowres_idx(n_entries);
-  std::vector<double> lowres_iou(n_entries, -1.0);
+  std::vector<int> combo_order(n_combos);
+  std::vector<double> lowres_iou(n_combos, -1.0);
 
   #pragma omp parallel for schedule(dynamic)
-  for (int ei = 0; ei < n_entries; ++ei) {
-    lowres_idx[ei] = ei;
-    if (decoded_coarse_areas_small_[ei] == 0) continue;
-    lowres_iou[ei] = ShiftedIoU(decoded_coarse_masks_small_[ei], input_mask_small,
-                                 du_small, dv_small,
-                                 decoded_coarse_areas_small_[ei], input_count_small);
+  for (int ci = 0; ci < n_combos; ++ci) {
+    combo_order[ci] = ci;
+    const auto& combo = combos[ci];
+    if (decoded_coarse_areas_small_[combo.entry_idx] == 0) continue;
+    int du_small = static_cast<int>(std::round(combo.du / 4.0));
+    int dv_small = static_cast<int>(std::round(combo.dv / 4.0));
+    lowres_iou[ci] = ShiftedIoU(decoded_coarse_masks_small_[combo.entry_idx],
+                                input_mask_small, du_small, dv_small,
+                                decoded_coarse_areas_small_[combo.entry_idx],
+                                input_count_small);
   }
 
-  std::sort(lowres_idx.begin(), lowres_idx.end(),
+  std::sort(combo_order.begin(), combo_order.end(),
             [&](int a, int b) { return lowres_iou[a] > lowres_iou[b]; });
 
   // Phase 2: Full-res IoU for top N only
-  int n_fullres = std::min(std::max(params.top_k_coarse * 8, 64), n_entries);
+  int n_fullres = std::min(std::max(params.top_k_coarse * 8, 64), n_combos);
   std::vector<ScoredCandidate> fullres_results(n_fullres);
 
   #pragma omp parallel for schedule(dynamic)
   for (int fi = 0; fi < n_fullres; ++fi) {
-    int ei = lowres_idx[fi];
+    int ci = combo_order[fi];
+    const auto& combo = combos[ci];
+    int ei = combo.entry_idx;
     if (decoded_coarse_areas_[ei] == 0) {
       fullres_results[fi] = {{}, -1.0, 1e6};
       continue;
     }
+    int du = static_cast<int>(std::round(combo.du));
+    int dv = static_cast<int>(std::round(combo.dv));
     double iou = ShiftedIoU(decoded_coarse_masks_[ei], input_mask,
                             du, dv, decoded_coarse_areas_[ei], input_count);
 
     const auto& entry = cache_.coarse_entries[ei];
-    double tz_total = entry.depth;
-    double tz = tz_total - entry.crot_z;
+    double tz = entry.depth - entry.crot_z;
 
     Pose6D pose;
     pose.rx = entry.rx;
     pose.ry = entry.ry;
     pose.rz = entry.rz;
-    pose.tx = (u_cx - cache_.header.cx) * tz_total / cache_.header.fx - entry.crot_x;
-    pose.ty = (v_cy - cache_.header.cy) * tz_total / cache_.header.fy - entry.crot_y;
+    pose.tx = combo.tx;
+    pose.ty = combo.ty;
     pose.tz = tz;
 
     fullres_results[fi] = {pose, iou, 1.0 - iou};
@@ -589,8 +716,10 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
   for (int fi = 0; fi < n_fullres; ++fi) {
     if (fullres_results[fi].iou < 0) continue;
     if (viz_) {
-      int ei = lowres_idx[fi];
-      cv::Mat shifted = ShiftMask(decoded_coarse_masks_[ei], shift_u, shift_v);
+      int ci = combo_order[fi];
+      const auto& combo = combos[ci];
+      cv::Mat shifted = ShiftMask(decoded_coarse_masks_[combo.entry_idx],
+                                  combo.du, combo.dv);
       viz_->LogCandidate(fi, fullres_results[fi].pose, shifted, fullres_results[fi].iou);
     }
     candidates.push_back(fullres_results[fi]);
@@ -602,12 +731,21 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
             });
 
   std::vector<ScoredCandidate> diverse;
-  std::set<int> seen_dirs;
+  auto dir_key = [&params](const Pose6D& p) -> int64_t {
+    int64_t key = static_cast<int64_t>(p.rx * 10) * 100000 +
+                  static_cast<int64_t>(p.ry * 10) * 1000 +
+                  static_cast<int64_t>(p.rz * 10);
+    if (params.use_nominal_position) {
+      // ノミナルモードでは同一回転でも位置グリッドが異なる候補を区別する
+      key = key * 40401 +
+            (static_cast<int64_t>(std::lround(p.tx * 100)) + 2000) * 201 +
+            (static_cast<int64_t>(std::lround(p.ty * 100)) + 2000);
+    }
+    return key;
+  };
+  std::set<int64_t> seen_dirs;
   for (const auto& c : candidates) {
-    int key = static_cast<int>(c.pose.rx * 10) * 100000 +
-              static_cast<int>(c.pose.ry * 10) * 1000 +
-              static_cast<int>(c.pose.rz * 10);
-    if (seen_dirs.insert(key).second) {
+    if (seen_dirs.insert(dir_key(c.pose)).second) {
       diverse.push_back(c);
     }
     if (static_cast<int>(diverse.size()) >= params.top_k_coarse) break;
@@ -617,6 +755,8 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
   for (size_t i = 0; i < diverse.size(); ++i) {
     std::cout << "  [" << i << "] iou=" << diverse[i].iou
               << " cost=" << diverse[i].cost
+              << " tx=" << diverse[i].pose.tx
+              << " ty=" << diverse[i].pose.ty
               << " tz=" << diverse[i].pose.tz << "\n";
   }
 
@@ -641,10 +781,22 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedLocalSearch(
   double u_cx = m.m10 / m.m00;
   double v_cy = m.m01 / m.m00;
 
+  const bool nominal = params.use_nominal_position;
+  const double fx = cache_.header.fx;
+  const double fy = cache_.header.fy;
+
+  // Phase 1 のシフト量 (非ノミナルは重心ベース、ノミナルは coarse候補の原点位置ベース)
   double shift_u = u_cx - cache_.header.cx;
   double shift_v = v_cy - cache_.header.cy;
 
   std::set<uint32_t> needed_coarse_idx;
+  // ノミナルモード: 各粗方向の coarse候補原点位置をローカル探索のアンカーにする
+  std::map<uint32_t, std::pair<double, double>> nominal_anchor;
+  double nominal_default_tx = 0.0, nominal_default_ty = 0.0;
+  if (nominal && !coarse_best.empty()) {
+    nominal_default_tx = coarse_best[0].pose.tx;
+    nominal_default_ty = coarse_best[0].pose.ty;
+  }
   int n_coarse = std::min(static_cast<int>(coarse_best.size()), 10);
 
   for (size_t ei = 0; ei < cache_.coarse_entries.size(); ++ei) {
@@ -656,6 +808,9 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedLocalSearch(
       if (drx < 0.01 && dry < 0.01 && drz < 0.01) {
         uint32_t dir_idx = static_cast<uint32_t>(ei / cache_.header.num_depth);
         needed_coarse_idx.insert(dir_idx);
+        if (nominal && nominal_anchor.find(dir_idx) == nominal_anchor.end()) {
+          nominal_anchor[dir_idx] = {coarse_best[ci].pose.tx, coarse_best[ci].pose.ty};
+        }
         break;
       }
     }
@@ -665,26 +820,83 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedLocalSearch(
 
   int n_local = static_cast<int>(cache_.local_entries.size());
   int input_count = static_cast<int>(area_input);
-  int du = static_cast<int>(std::round(shift_u));
-  int dv = static_cast<int>(std::round(shift_v));
+
+  // エントリごとのシフト量・原点位置 (非ノミナルは重心、ノミナルはアンカー由来)
+  std::vector<double> entry_du(n_local, shift_u), entry_dv(n_local, shift_v);
+  std::vector<double> entry_tx(n_local, 0.0), entry_ty(n_local, 0.0);
+  size_t axis_skipped = 0, range_skipped = 0, nominal_z_skipped = 0;
 
   // Phase 1: Low-res IoU for all entries
   cv::Mat input_mask_small;
   cv::resize(input_mask, input_mask_small, cv::Size(small_w_, small_h_), 0, 0, cv::INTER_NEAREST);
   int input_count_small = cv::countNonZero(input_mask_small);
-  int du_small = static_cast<int>(std::round(static_cast<double>(du) / 4.0));
-  int dv_small = static_cast<int>(std::round(static_cast<double>(dv) / 4.0));
 
   std::vector<double> lowres_iou(n_local, -1.0);
 
-  #pragma omp parallel for schedule(dynamic)
+  #pragma omp parallel for schedule(dynamic) reduction(+:axis_skipped,range_skipped,nominal_z_skipped)
   for (int li = 0; li < n_local; ++li) {
     if (decoded_local_areas_small_[li] == 0) continue;
-    if (needed_coarse_idx.find(cache_.local_entries[li].coarse_idx) == needed_coarse_idx.end())
+    const auto& lentry = cache_.local_entries[li];
+    if (needed_coarse_idx.find(lentry.coarse_idx) == needed_coarse_idx.end())
       continue;
+
+    // 要求深度範囲外のエントリは評価しない
+    if (lentry.depth < params.depth_min - 1e-9 ||
+        lentry.depth > params.depth_max + 1e-9) {
+      continue;
+    }
+
+    // 軸制約外の回転は評価しない
+    if (!RotationSatisfiesAxisConstraints(lentry.rx, lentry.ry, lentry.rz,
+                                          params.axis_constraints)) {
+      ++axis_skipped;
+      continue;
+    }
+
+    double tz_total = lentry.depth;
+    if (tz_total <= 0) continue;
+
+    if (nominal) {
+      // 原点Zがノミナル箱外のエントリは評価しない
+      double oz = tz_total - lentry.crot_z;
+      if (oz < params.nominal_tz - params.nominal_tol_tz - 1e-9 ||
+          oz > params.nominal_tz + params.nominal_tol_tz + 1e-9) {
+        ++nominal_z_skipped;
+        continue;
+      }
+      auto it = nominal_anchor.find(lentry.coarse_idx);
+      double tx = (it != nominal_anchor.end()) ? it->second.first : nominal_default_tx;
+      double ty = (it != nominal_anchor.end()) ? it->second.second : nominal_default_ty;
+      entry_tx[li] = tx;
+      entry_ty[li] = ty;
+      entry_du[li] = fx * (lentry.crot_x + tx) / tz_total;
+      entry_dv[li] = fy * (lentry.crot_y + ty) / tz_total;
+    } else {
+      double tx = (u_cx - cache_.header.cx) * tz_total / fx - lentry.crot_x;
+      double ty = (v_cy - cache_.header.cy) * tz_total / fy - lentry.crot_y;
+      entry_tx[li] = tx;
+      entry_ty[li] = ty;
+    }
+
+    if ((params.has_tx_range &&
+         (entry_tx[li] < params.tx_min || entry_tx[li] > params.tx_max)) ||
+        (params.has_ty_range &&
+         (entry_ty[li] < params.ty_min || entry_ty[li] > params.ty_max))) {
+      ++range_skipped;
+      continue;
+    }
+
+    int du_small = static_cast<int>(std::round(entry_du[li] / 4.0));
+    int dv_small = static_cast<int>(std::round(entry_dv[li] / 4.0));
     lowres_iou[li] = ShiftedIoU(decoded_local_masks_small_[li], input_mask_small,
-                                 du_small, dv_small,
-                                 decoded_local_areas_small_[li], input_count_small);
+                                du_small, dv_small,
+                                decoded_local_areas_small_[li], input_count_small);
+  }
+
+  if (EstimationHasConstraints(params)) {
+    std::cout << "[Constraints] CachedLocalSearch: " << axis_skipped
+              << " axis-skipped, " << range_skipped << " range-skipped, "
+              << nominal_z_skipped << " nominal-z-skipped entries\n";
   }
 
   std::vector<int> valid_idx;
@@ -710,7 +922,7 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedLocalSearch(
     const auto& local_entry = cache_.local_entries[li];
 
     cv::Mat base_mask = DecodeMask(local_entry.mask_offset, local_entry.mask_size);
-    cv::Mat shifted = ShiftMask(base_mask, shift_u, shift_v);
+    cv::Mat shifted = ShiftMask(base_mask, entry_du[li], entry_dv[li]);
 
     cv::Mat diff;
     cv::absdiff(shifted, input_mask, diff);
@@ -729,18 +941,19 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedLocalSearch(
                             : 0.0;
 
     double cost = chamfer + 0.5 * area_ratio;
+    int du = static_cast<int>(std::round(entry_du[li]));
+    int dv = static_cast<int>(std::round(entry_dv[li]));
     double iou = ShiftedIoU(base_mask, input_mask, du, dv,
                             static_cast<int>(area_rendered), input_count);
 
-    double tz_total = local_entry.depth;
-    double tz = tz_total - local_entry.crot_z;
+    double tz = local_entry.depth - local_entry.crot_z;
 
     Pose6D pose;
     pose.rx = local_entry.rx;
     pose.ry = local_entry.ry;
     pose.rz = local_entry.rz;
-    pose.tx = (u_cx - cache_.header.cx) * tz_total / cache_.header.fx - local_entry.crot_x;
-    pose.ty = (v_cy - cache_.header.cy) * tz_total / cache_.header.fy - local_entry.crot_y;
+    pose.tx = entry_tx[li];
+    pose.ty = entry_ty[li];
     pose.tz = tz;
 
     fullres_results[fi] = {pose, iou, cost};
@@ -771,9 +984,10 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
                                               const BobyqaOptions& bobyqa_opts,
                                               RefineMethod refine_method,
                                               int refine_index,
-                                               maskgen::MaskGenerator* generator,
-                                               const std::atomic<bool>* abort_flag,
-                                               bool force_cpu) {
+                                              const EstimationParams* constraint_params,
+                                              maskgen::MaskGenerator* generator,
+                                              const std::atomic<bool>* abort_flag,
+                                              bool force_cpu) {
   std::vector<double> x = {initial.pose.tx, initial.pose.ty, initial.pose.tz,
                            initial.pose.rx, initial.pose.ry, initial.pose.rz};
 
@@ -806,6 +1020,13 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
     p.rz = params[5];
 
     if (p.tz < 0.01) {
+      prof.total_wall_ms += std::chrono::duration<double, std::milli>(
+          std::chrono::high_resolution_clock::now() - t0).count();
+      return 1e6;
+    }
+
+    // 制約外の姿勢はペナルティで排除 (NM/BOBYQA共通)
+    if (constraint_params && !PoseSatisfiesConstraints(p, *constraint_params)) {
       prof.total_wall_ms += std::chrono::duration<double, std::milli>(
           std::chrono::high_resolution_clock::now() - t0).count();
       return 1e6;
@@ -898,7 +1119,23 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
 
   bool aborted = false;
   if (refine_method == RefineMethod::BOBYQA) {
-    Bobyqa(cost, x, initial_step, max_iterations, bobyqa_opts, abort_flag, &aborted);
+    // tx/ty 範囲は NLopt のネイティブ bounds で扱う。軸制約は cost 側のペナルティで処理。
+    std::vector<double> lower(6, -HUGE_VAL), upper(6, HUGE_VAL);
+    bool has_box = false;
+    if (constraint_params) {
+      if (constraint_params->has_tx_range) {
+        lower[0] = constraint_params->tx_min;
+        upper[0] = constraint_params->tx_max;
+        has_box = true;
+      }
+      if (constraint_params->has_ty_range) {
+        lower[1] = constraint_params->ty_min;
+        upper[1] = constraint_params->ty_max;
+        has_box = true;
+      }
+    }
+    Bobyqa(cost, x, initial_step, max_iterations, bobyqa_opts, abort_flag, &aborted,
+           has_box ? &lower : nullptr, has_box ? &upper : nullptr);
   } else {
     try {
       NelderMead(cost, x, initial_step, max_iterations, nm_opts);
@@ -947,7 +1184,84 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
 
 SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
                                             const EstimationParams& params) {
+  SearchResult result = EstimateImpl(input_mask, params);
+
+  // フォールバック: 制約付き推定のIoUが閾値未満なら制約なしで再試行する。
+  // キャッシュが制約付き (軸制約付き) で生成されている場合は、制約なしの
+  // マスクが存在しないためフォールバックできない。
+  if (EstimationHasConstraints(params) && params.fallback_unconstrained &&
+      result.iou < params.fallback_iou) {
+    const bool cache_covers_all =
+        cache_.header.version < 2 || cache_.header.num_axis_constraints == 0;
+    if (!cache_covers_all) {
+      std::cout << "\n[Fallback] Result IoU=" << result.iou << " < "
+                << params.fallback_iou
+                << ", but cache was built with axis constraints;"
+                << " unconstrained retry is unavailable (rebuild the cache"
+                << " without --axis-constraint to enable it)\n";
+      return result;
+    }
+    std::cout << "\n[Fallback] Constrained result IoU=" << result.iou
+              << " < " << params.fallback_iou
+              << "; retrying without pose constraints\n";
+    EstimationParams unconstrained = StripPoseConstraints(params);
+    SearchResult fallback_result = EstimateImpl(input_mask, unconstrained);
+    if (fallback_result.iou > result.iou) {
+      std::cout << "[Fallback] Adopting unconstrained result (IoU "
+                << result.iou << " -> " << fallback_result.iou << ")\n";
+      return fallback_result;
+    }
+    std::cout << "[Fallback] Unconstrained retry did not improve (IoU "
+              << fallback_result.iou << "); keeping constrained result\n";
+  }
+  return result;
+}
+
+SearchResult CachedPoseEstimator::EstimateImpl(const cv::Mat& input_mask,
+                                               const EstimationParams& params) {
   auto t_total_start = std::chrono::high_resolution_clock::now();
+
+  // キャッシュのカバー範囲検証 (制約付き実行時のみ)。
+  // - 軸制約: 要求する円錐がキャッシュの円錐に包含されること
+  // - 深度: 要求する [depth_min, depth_max] がキャッシュ生成時の範囲に包含されること
+  if (EstimationHasConstraints(params)) {
+    if (!params.axis_constraints.empty()) {
+      const bool cache_constrained =
+          cache_.header.version >= 2 && cache_.header.num_axis_constraints > 0;
+      if (cache_constrained) {
+        for (const auto& req : params.axis_constraints) {
+          bool covered = false;
+          for (uint32_t k = 0; k < cache_.header.num_axis_constraints; ++k) {
+            const auto& cc = cache_.header.axis_constraints[k];
+            if (cc.axis != req.axis) continue;
+            double dot = static_cast<double>(cc.ref_dir[0]) * req.ref_dir[0] +
+                         static_cast<double>(cc.ref_dir[1]) * req.ref_dir[1] +
+                         static_cast<double>(cc.ref_dir[2]) * req.ref_dir[2];
+            // 参照方向がほぼ一致し、キャッシュ側の円錐が同等以上に広いこと
+            if (dot > 0.99999 &&
+                cc.max_angle_deg >= req.max_angle_deg - 1e-4f) {
+              covered = true;
+              break;
+            }
+          }
+          if (!covered) {
+            throw std::runtime_error(
+                "Cache does not cover requested axis constraint (" +
+                AxisConstraintToString(req) +
+                "); rebuild the cache with a matching or wider --axis-constraint");
+          }
+        }
+      }
+    }
+    if (params.depth_min < cache_.header.depth_min - 1e-9 ||
+        params.depth_max > cache_.header.depth_max + 1e-9) {
+      std::cerr << "Error: requested depth range [" << params.depth_min << ", "
+                << params.depth_max << "] exceeds cache coverage ["
+                << cache_.header.depth_min << ", " << cache_.header.depth_max
+                << "]; pass matching --depth-min/--depth-max\n";
+      throw std::runtime_error("Cache depth range does not cover requested range");
+    }
+  }
 
   auto t0 = std::chrono::high_resolution_clock::now();
   cv::Mat binary_mask;
@@ -1251,6 +1565,7 @@ SearchResult CachedPoseEstimator::Estimate(const cv::Mat& input_mask,
         refine_results[i] = RefinePose(refine_candidates[i], binary_mask, dt_input,
                                        params.nelder_mead_iterations, params.nm_options,
                                        params.bobyqa_options, params.refine_method, i,
+                                       &params,
                                        thread_generators[thread_id].get(), &early_stop,
                                        params.use_cpu);
         std::cout << "[Timing] RefinePose " << method_tag << " candidate #" << i << " iou " << refine_results[i].iou << "\n";

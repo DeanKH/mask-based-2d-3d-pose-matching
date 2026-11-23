@@ -127,10 +127,35 @@ bool ReadCache(const std::string& path, CacheData& cache) {
     return false;
   }
 
-  std::memcpy(&cache.header, buffer.data(), sizeof(CacheFileHeader));
+  // v1との互換: v1は拡張部 (軸制約) がないため該当バイト数のみ読む。
+  // cache.header はデフォルト初期化されているため、v1読み込み時の
+  // 拡張フィールドは「無制約」を表すデフォルト値のままとなる。
+  const size_t v1_size = CacheHeaderV1Size();
+  if (file_size < v1_size) {
+    std::cerr << "Error: cache file too small\n";
+    return false;
+  }
+  std::memcpy(&cache.header, buffer.data(), v1_size);
 
   if (std::memcmp(cache.header.magic, "PMCK", 4) != 0) {
     std::cerr << "Error: invalid cache file magic\n";
+    return false;
+  }
+
+  if (cache.header.version >= 2) {
+    if (file_size < sizeof(CacheFileHeader)) {
+      std::cerr << "Error: cache file too small for version "
+                << cache.header.version << "\n";
+      return false;
+    }
+    std::memcpy(reinterpret_cast<char*>(&cache.header) + v1_size,
+                buffer.data() + v1_size, sizeof(CacheFileHeader) - v1_size);
+    if (cache.header.num_axis_constraints > 4) {
+      std::cerr << "Error: cache has too many axis constraints\n";
+      return false;
+    }
+  } else if (cache.header.version != 1) {
+    std::cerr << "Error: unsupported cache version: " << cache.header.version << "\n";
     return false;
   }
 

@@ -32,6 +32,11 @@ class CachedPoseEstimator {
                         const EstimationParams& params = EstimationParams());
 
  private:
+  // 制約適用後の本体。Estimate はフォールバック (制約なし再試行) を制御する。
+  // キャッシュが制約付きで生成されている場合はフォールバックできない。
+  SearchResult EstimateImpl(const cv::Mat& input_mask,
+                            const EstimationParams& params);
+
   cv::Mat DecodeMask(size_t mask_offset, uint32_t mask_size) const;
 
   cv::Mat ShiftMask(const cv::Mat& mask, double dx, double dy) const;
@@ -55,6 +60,7 @@ class CachedPoseEstimator {
                           const NelderMeadOptions& nm_opts,
                           const BobyqaOptions& bobyqa_opts,
                           RefineMethod refine_method, int refine_index,
+                          const EstimationParams* constraint_params,
                           maskgen::MaskGenerator* generator,
                           const std::atomic<bool>* abort_flag = nullptr,
                           bool force_cpu = false);

@@ -126,6 +126,8 @@ Stage 1: Coarse Search
   候補のソート指標は CandidateSortMetric で切替可
   (IoU/HuMoments/ZernikeMoments/CentroidIoU/CentroidDT/DT_IoU/
    CentralMoments/ShapeContext/ContourChamfer/FourierDescriptor 等)
+  --axis-constraint / --tx-range / --ty-range / --nominal-position で
+  候補姿勢の範囲を制限可能 (docs/constraint.md参照)
 
 Stage 2: Local Search
   各coarse候補の周辺をcone sampling (±30°) + 反転

@@ -54,7 +54,9 @@ inline double Bobyqa(std::function<double(const std::vector<double>&)> cost,
                      int max_iterations,
                      const BobyqaOptions& opts = BobyqaOptions(),
                      const std::atomic<bool>* abort_flag = nullptr,
-                     bool* aborted = nullptr) {
+                     bool* aborted = nullptr,
+                     const std::vector<double>* lower_bounds = nullptr,
+                     const std::vector<double>* upper_bounds = nullptr) {
   const unsigned n = static_cast<unsigned>(x.size());
 
   nlopt_opt opt = nlopt_create(NLOPT_LN_BOBYQA, n);
@@ -66,6 +68,14 @@ inline double Bobyqa(std::function<double(const std::vector<double>&)> cost,
   ctx.aborted = false;
 
   nlopt_set_min_objective(opt, detail::bobyqa_callback, &ctx);
+
+  // ボックス制約 (tx/ty 範囲など)。軸方向制約はコスト関数側のペナルティで処理する。
+  if (lower_bounds && lower_bounds->size() >= n) {
+    nlopt_set_lower_bounds(opt, lower_bounds->data());
+  }
+  if (upper_bounds && upper_bounds->size() >= n) {
+    nlopt_set_upper_bounds(opt, upper_bounds->data());
+  }
 
   if (opts.population > 0) {
     nlopt_set_population(opt, opts.population);

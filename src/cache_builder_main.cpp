@@ -155,6 +155,10 @@ static void PrintUsage(const char* program) {
       << "  --local-in-plane INT    Local in-plane samples (default: 6)\n"
       << "  --local-depth INT       Local depth samples (default: 3)\n"
       << "  --local-cone-angle FLOAT  Local cone half angle deg (default: 30.0)\n"
+      << "  --axis-constraint SPEC  Axis constraint baked into the cache, repeatable\n"
+      << "                        (e.g. \"z:0,0,-1:30\" = model +Z within 30 deg of camera\n"
+      << "                        direction (0,0,-1)). Entries outside the cone are not\n"
+      << "                        rendered, shrinking the cache and build time.\n"
       << "  --threads INT       Number of render threads (default: 4)\n"
       << "  -h, --help          Show this help\n";
 }
@@ -214,6 +218,23 @@ int main(int argc, char* argv[]) {
     } else if (arg == "--local-cone-angle") {
       if (++i >= args.size()) return 1;
       params.local_cone_half_angle_deg = std::stod(args[i]);
+    } else if (arg == "--axis-constraint") {
+      if (++i >= args.size()) {
+        std::cerr << "Error: --axis-constraint requires a spec like \"z:0,0,-1:30\"\n";
+        return 1;
+      }
+      AxisConstraint ac;
+      if (!ParseAxisConstraintSpec(args[i], ac)) {
+        std::cerr << "Error: invalid axis constraint spec: " << args[i]
+                  << " (expected \"x|y|z:dx,dy,dz:max_deg\")\n";
+        return 1;
+      }
+      if (params.axis_constraints.size() >= 4) {
+        std::cerr << "Error: too many --axis-constraint entries (max 4)\n";
+        return 1;
+      }
+      params.axis_constraints.push_back(ac);
+      std::cout << "Axis constraint: " << AxisConstraintToString(ac) << "\n";
     } else if (arg == "--threads") {
       if (++i >= args.size()) return 1;
       num_threads = std::stoi(args[i]);
@@ -425,10 +446,19 @@ int main(int argc, char* argv[]) {
   std::cout << "Coarse work items: " << coarse_work.size() << "\n";
   std::cout << "Local work items: " << local_work.size() << "\n";
 
+  std::atomic<size_t> constraint_skipped{0};
+
   auto render_one = [&](maskgen::MaskGenerator& gen,
                         double rx, double ry, double rz,
                         float crot_x, float crot_y, float crot_z,
                         double depth) -> std::vector<uint8_t> {
+    // 軸制約外の回転はレンダリングしない (エントリ自体は mask_size=0 で
+    // 保持され、キャッシュのインデックス構造 ei/num_depth は維持される)
+    if (!RotationSatisfiesAxisConstraints(rx, ry, rz, params.axis_constraints)) {
+      constraint_skipped.fetch_add(1);
+      return {};
+    }
+
     double tz_total = depth;
     double tz = tz_total - crot_z;
     if (tz < 0.01) return {};
@@ -556,6 +586,16 @@ int main(int argc, char* argv[]) {
   cache.header.local_depth = params.local_depth;
   cache.header.local_cone_half_angle_deg = params.local_cone_half_angle_deg;
   cache.header.top_k_local = params.top_k_local;
+  cache.header.num_axis_constraints =
+      static_cast<uint32_t>(params.axis_constraints.size());
+  for (size_t ci = 0; ci < params.axis_constraints.size() && ci < 4; ++ci) {
+    cache.header.axis_constraints[ci].axis = params.axis_constraints[ci].axis;
+    cache.header.axis_constraints[ci].ref_dir[0] = params.axis_constraints[ci].ref_dir[0];
+    cache.header.axis_constraints[ci].ref_dir[1] = params.axis_constraints[ci].ref_dir[1];
+    cache.header.axis_constraints[ci].ref_dir[2] = params.axis_constraints[ci].ref_dir[2];
+    cache.header.axis_constraints[ci].max_angle_deg = params.axis_constraints[ci].max_angle_deg;
+    cache.header.axis_constraints[ci].pad = 0.0f;
+  }
 
   std::string model_hash = ComputeSHA256(model_path);
   if (!model_hash.empty()) {
@@ -630,6 +670,14 @@ int main(int argc, char* argv[]) {
   std::cout << "Threads: " << num_threads << "\n";
   std::cout << "Coarse entries: " << cache.coarse_entries.size() << "\n";
   std::cout << "Local entries: " << cache.local_entries.size() << "\n";
+  if (!params.axis_constraints.empty()) {
+    std::cout << "Axis constraints: " << params.axis_constraints.size() << "\n";
+    for (const auto& ac : params.axis_constraints) {
+      std::cout << "  - " << AxisConstraintToString(ac) << "\n";
+    }
+    std::cout << "Entries skipped by constraints (not rendered): "
+              << constraint_skipped.load() << "\n";
+  }
   std::cout << "File size: " << total_size_mb << " MB\n";
   std::cout << "Coarse render time: " << coarse_ms / 1000.0 << " s\n";
   std::cout << "Local render time: " << local_ms / 1000.0 << " s\n";

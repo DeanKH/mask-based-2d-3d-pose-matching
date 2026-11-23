@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -10,9 +11,18 @@ namespace pose_matching {
 
 #pragma pack(push, 1)
 
+// 軸方向制約 (キャッシュに焼き込むもの。tx/ty範囲・ノミナル位置は
+// マスクのピクセルシフトで実行時に吸収されるためキャッシュには記録しない)
+struct CacheAxisConstraint {
+  int32_t axis = 2;             // モデル軸: 0=x, 1=y, 2=z
+  float ref_dir[3] = {0, 0, -1};  // カメラ座標系の参照方向 (正規化済み)
+  float max_angle_deg = 30.0f;
+  float pad = 0.0f;
+};
+
 struct CacheFileHeader {
   char magic[4] = {'P', 'M', 'C', 'K'};
-  uint32_t version = 1;
+  uint32_t version = 2;
   uint32_t image_width = 0;
   uint32_t image_height = 0;
   double fx = 0;
@@ -41,6 +51,10 @@ struct CacheFileHeader {
   uint64_t coarse_offset = 0;
   uint64_t local_offset = 0;
   uint64_t data_offset = 0;
+  // ---- v2 拡張 (末尾に追記。v1ファイルはここ以降を読まない) ----
+  uint32_t num_axis_constraints = 0;
+  uint32_t axis_constraints_pad = 0;
+  CacheAxisConstraint axis_constraints[4] = {};
 };
 
 struct CoarseEntry {
@@ -78,6 +92,12 @@ std::vector<uint8_t> ZlibCompress(const uint8_t* data, size_t size);
 std::vector<uint8_t> ZlibDecompress(const uint8_t* data, size_t size, size_t expected_size);
 
 bool WriteCache(const std::string& path, const CacheData& cache);
+
+// v1ヘッダ (axis_constraints 拡張より前) のバイトサイズ。
+// v1キャッシュを読む際はこのサイズだけ先頭から読み、拡張部はデフォルト (無制約) 扱いにする。
+inline size_t CacheHeaderV1Size() {
+  return offsetof(CacheFileHeader, num_axis_constraints);
+}
 
 bool ReadCache(const std::string& path, CacheData& cache);
 

@@ -36,6 +36,9 @@ static void PrintUsage(const char* program) {
       << "  --cache-dir PATH     Directory containing <object>.bin cache files (default: ./cache)\n"
       << "  --output-dir PATH    Output base directory (default: ./benchmark)\n"
       << "  --scale FLOAT        Model scale factor (default: 0.001)\n"
+      << "  --depth-min FLOAT    Requested min centroid depth [m]; must be within cache\n"
+      << "                       coverage, filters cached entries (default: 0.05)\n"
+      << "  --depth-max FLOAT    Requested max centroid depth [m] (default: 0.50)\n"
       << "  --max-refine INT     Max refinement iterations (default: 200)\n"
       << "  --max-candidates INT Max refine candidates (default: 5)\n"
       << "  --fatol FLOAT        NM/BOBYQA function tolerance (default: 1e-4)\n"
@@ -50,6 +53,15 @@ static void PrintUsage(const char* program) {
       << "  --sort-metric STR    Sort metric: iou, centroid_iou, etc. (default: iou)\n"
       << "  --bobyqa-population INT  BOBYQA interpolation points: 0=auto(2n+1), 28=full quadratic (default: 0)\n"
       << "  --bobyqa-step-scale FLOAT  BOBYQA initial step scale factor (default: 1.0)\n"
+      << "\nCandidate pose constraints (per-dataset; cache must cover them):\n"
+      << "  --axis-constraint SPEC  Axis direction constraint, repeatable (e.g. \"z:0,0,-1:30\")\n"
+      << "  --tx-range MIN:MAX   Model origin tx allowed range in meters\n"
+      << "  --ty-range MIN:MAX   Model origin ty allowed range in meters\n"
+      << "  --nominal-position X,Y,Z  Sample tx/ty on a grid around this model origin position\n"
+      << "  --nominal-tol DX,DY,DZ   Nominal grid half-extents (default: 0.02,0.02,0.03)\n"
+      << "  --nominal-grid INT   tx/ty grid samples per axis (default: 3)\n"
+      << "  --no-fallback        Disable unconstrained retry on low IoU\n"
+      << "  --fallback-iou FLOAT Retry without constraints when final IoU < this (default: 0.70)\n"
       << "  -h, --help           Show this help\n";
 }
 
@@ -247,6 +259,10 @@ int main(int argc, char* argv[]) {
       cfg.output_dir = args[++i];
     } else if (arg == "--scale") {
       cfg.model_scale = std::stof(args[++i]);
+    } else if (arg == "--depth-min") {
+      cfg.est_params.depth_min = std::stod(args[++i]);
+    } else if (arg == "--depth-max") {
+      cfg.est_params.depth_max = std::stod(args[++i]);
     } else if (arg == "--max-refine") {
       cfg.est_params.nelder_mead_iterations = std::stoi(args[++i]);
     } else if (arg == "--max-candidates") {
@@ -298,6 +314,81 @@ int main(int argc, char* argv[]) {
       cfg.est_params.bobyqa_options.population = std::stoi(args[++i]);
     } else if (arg == "--bobyqa-step-scale") {
       cfg.est_params.bobyqa_options.initial_step_scale = std::stod(args[++i]);
+    } else if (arg == "--axis-constraint") {
+      if (++i >= args.size()) {
+        std::cerr << "Error: --axis-constraint requires a spec like \"z:0,0,-1:30\"\n";
+        return 1;
+      }
+      pose_matching::AxisConstraint ac;
+      if (!pose_matching::ParseAxisConstraintSpec(args[i], ac)) {
+        std::cerr << "Error: invalid axis constraint spec: " << args[i]
+                  << " (expected \"x|y|z:dx,dy,dz:max_deg\")\n";
+        return 1;
+      }
+      if (cfg.est_params.axis_constraints.size() >= 4) {
+        std::cerr << "Error: too many --axis-constraint entries (max 4)\n";
+        return 1;
+      }
+      cfg.est_params.axis_constraints.push_back(ac);
+    } else if (arg == "--tx-range") {
+      if (++i >= args.size()) return 1;
+      double lo, hi;
+      if (!pose_matching::ParseRangeSpec(args[i], lo, hi)) {
+        std::cerr << "Error: invalid --tx-range: " << args[i] << " (expected MIN:MAX)\n";
+        return 1;
+      }
+      cfg.est_params.has_tx_range = true;
+      cfg.est_params.tx_min = lo;
+      cfg.est_params.tx_max = hi;
+    } else if (arg == "--ty-range") {
+      if (++i >= args.size()) return 1;
+      double lo, hi;
+      if (!pose_matching::ParseRangeSpec(args[i], lo, hi)) {
+        std::cerr << "Error: invalid --ty-range: " << args[i] << " (expected MIN:MAX)\n";
+        return 1;
+      }
+      cfg.est_params.has_ty_range = true;
+      cfg.est_params.ty_min = lo;
+      cfg.est_params.ty_max = hi;
+    } else if (arg == "--nominal-position") {
+      if (++i >= args.size()) return 1;
+      double v[3];
+      if (!pose_matching::ParseVec3Spec(args[i], v)) {
+        std::cerr << "Error: invalid --nominal-position: " << args[i]
+                  << " (expected X,Y,Z in meters)\n";
+        return 1;
+      }
+      cfg.est_params.use_nominal_position = true;
+      cfg.est_params.nominal_tx = v[0];
+      cfg.est_params.nominal_ty = v[1];
+      cfg.est_params.nominal_tz = v[2];
+    } else if (arg == "--nominal-tol") {
+      if (++i >= args.size()) return 1;
+      double v[3];
+      if (!pose_matching::ParseVec3Spec(args[i], v) || v[0] < 0 || v[1] < 0 || v[2] < 0) {
+        std::cerr << "Error: invalid --nominal-tol: " << args[i]
+                  << " (expected DX,DY,DZ >= 0 in meters)\n";
+        return 1;
+      }
+      cfg.est_params.nominal_tol_tx = v[0];
+      cfg.est_params.nominal_tol_ty = v[1];
+      cfg.est_params.nominal_tol_tz = v[2];
+    } else if (arg == "--nominal-grid") {
+      if (++i >= args.size()) return 1;
+      cfg.est_params.nominal_grid = std::stoi(args[i]);
+      if (cfg.est_params.nominal_grid < 1) {
+        std::cerr << "Error: --nominal-grid must be >= 1\n";
+        return 1;
+      }
+    } else if (arg == "--no-fallback") {
+      cfg.est_params.fallback_unconstrained = false;
+    } else if (arg == "--fallback-iou") {
+      if (++i >= args.size()) return 1;
+      cfg.est_params.fallback_iou = std::stod(args[i]);
+      if (cfg.est_params.fallback_iou <= 0.0 || cfg.est_params.fallback_iou > 1.0) {
+        std::cerr << "Error: --fallback-iou must be in (0, 1]\n";
+        return 1;
+      }
     } else {
       std::cerr << "Error: unknown option: " << arg << "\n";
       PrintUsage(args[0].c_str());

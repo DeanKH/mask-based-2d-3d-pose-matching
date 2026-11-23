@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -171,42 +172,71 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
   double u_cx = m.m10 / m.m00;
   double v_cy = m.m01 / m.m00;
 
-  double input_area = m.m00;
-
   double area_input = cv::countNonZero(input_mask);
 
-  std::vector<double> depths;
-  double depth_step = (params.depth_max - params.depth_min) / std::max(params.num_depth - 1, 1);
-  for (int i = 0; i < params.num_depth; ++i) {
-    depths.push_back(params.depth_min + i * depth_step);
-  }
+  const bool nominal = params.use_nominal_position;
 
-  if (input_area > 0) {
+  // マスク面積から推定した重心深度 (存在すれば候補に自動追加する)
+  double estimated_depth = -1.0;
+  if (area_input > 0) {
     double fx = camera_params_.fx;
     double fy = camera_params_.fy;
     double mesh_area_estimate = mesh_extent_[principal_axis_] *
                                 *std::max_element(mesh_extent_, mesh_extent_ + 3);
-    double estimated_depth =
-        std::sqrt(mesh_area_estimate * fx * fy / input_area) * 0.5;
+    estimated_depth =
+        std::sqrt(mesh_area_estimate * fx * fy / area_input) * 0.5;
+  }
+
+  // 非ノミナルモード: depth_min..depth_max を等間隔サンプリング + 推定深度を1点追加
+  std::vector<double> shared_depths;
+  if (!nominal) {
+    double depth_step = (params.depth_max - params.depth_min) / std::max(params.num_depth - 1, 1);
+    for (int i = 0; i < params.num_depth; ++i) {
+      shared_depths.push_back(params.depth_min + i * depth_step);
+    }
     if (estimated_depth > params.depth_min && estimated_depth < params.depth_max) {
       bool too_close = false;
-      for (double d : depths) {
+      for (double d : shared_depths) {
         if (std::abs(d - estimated_depth) < depth_step * 0.3) {
           too_close = true;
           break;
         }
       }
       if (!too_close) {
-        depths.push_back(estimated_depth);
+        shared_depths.push_back(estimated_depth);
       }
     }
   }
 
+  // center ± tol を n 分割した等間隔グリッド (n=1 は中心のみ)
+  auto make_grid = [](double center, double tol, int n) {
+    std::vector<double> vals;
+    if (n <= 1) {
+      vals.push_back(center);
+      return vals;
+    }
+    for (int i = 0; i < n; ++i) {
+      vals.push_back(center - tol + (2.0 * tol) * i / (n - 1));
+    }
+    return vals;
+  };
+
+  // ノミナルモード: 原点 tx/ty をノミナル位置 ± tol のグリッドからサンプル
+  std::vector<double> grid_tx, grid_ty;
+  if (nominal) {
+    grid_tx = make_grid(params.nominal_tx, params.nominal_tol_tx, params.nominal_grid);
+    grid_ty = make_grid(params.nominal_ty, params.nominal_tol_ty, params.nominal_grid);
+  }
+
   auto directions = FibonacciSphere(params.num_directions);
   std::vector<ScoredCandidate> candidates;
-  candidates.reserve(directions.size() * params.num_in_plane * depths.size());
+  candidates.reserve(directions.size() * params.num_in_plane *
+                     std::max<size_t>(shared_depths.size(), 1) *
+                     (nominal ? static_cast<size_t>(grid_tx.size() * grid_ty.size()) : 1));
 
+  size_t skipped_by_constraints = 0;
   int candidate_index = 0;
+
   for (const auto& dir : directions) {
     for (int ip = 0; ip < params.num_in_plane; ++ip) {
       float in_plane = 2.0f * glm::pi<float>() * static_cast<float>(ip) /
@@ -217,33 +247,111 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
       double rx, ry, rz;
       ExtractEulerZYX(R, rx, ry, rz);
 
+      // 軸制約は (方向, 面内回転) で固定 → 深度・並進のサンプリング前に弾く
+      if (!RotationSatisfiesAxisConstraints(rx, ry, rz, params.axis_constraints)) {
+        ++skipped_by_constraints;
+        continue;
+      }
+
       glm::vec4 c_rot = R * glm::vec4(mesh_centroid_[0], mesh_centroid_[1],
                                        mesh_centroid_[2], 1.0f);
 
-      for (double depth : depths) {
-        Pose6D pose;
-        pose.rx = rx;
-        pose.ry = ry;
-        pose.rz = rz;
-
-        double tz_total = depth;
-        pose.tx = (u_cx - camera_params_.cx) * tz_total / camera_params_.fx - c_rot.x;
-        pose.ty = (v_cy - camera_params_.cy) * tz_total / camera_params_.fy - c_rot.y;
-        pose.tz = tz_total - c_rot.z;
-
-        if (pose.tz < 0.01) continue;
-
-        cv::Mat rendered = RenderPose(pose);
-        double iou = ComputeIoU(rendered, input_mask);
-
-        if (viz_) {
-          viz_->LogCandidate(candidate_index, pose, rendered, iou);
+      // この (方向, 面内回転) で評価する重心深度のリスト
+      std::vector<double> depths;
+      if (!nominal) {
+        depths = shared_depths;
+      } else {
+        // 原点Z = nominal_tz ± nominal_tol_tz を num_depth 段階。
+        // 重心深度 = 原点Z + c_rot.z。depth_min/max (重心深度の絶対範囲) でクリップ。
+        double z_step = params.num_depth > 1
+            ? (2.0 * params.nominal_tol_tz) / (params.num_depth - 1) : 0.0;
+        for (double oz : make_grid(params.nominal_tz, params.nominal_tol_tz,
+                                   params.num_depth)) {
+          double tz_total = oz + c_rot.z;
+          if (tz_total < params.depth_min || tz_total > params.depth_max) continue;
+          if (!depths.empty() && std::abs(tz_total - depths.back()) < 1e-9) continue;
+          depths.push_back(tz_total);
         }
-        candidate_index++;
+        // 推定深度がノミナル箱内に収まる場合のみ自動追加
+        if (estimated_depth > 0.0) {
+          double oz_est = estimated_depth - c_rot.z;
+          if (oz_est >= params.nominal_tz - params.nominal_tol_tz - 1e-9 &&
+              oz_est <= params.nominal_tz + params.nominal_tol_tz + 1e-9) {
+            bool too_close = false;
+            for (double d : depths) {
+              if (std::abs(d - estimated_depth) < z_step * 0.3) {
+                too_close = true;
+                break;
+              }
+            }
+            if (!too_close) depths.push_back(estimated_depth);
+          }
+        }
+      }
 
-        candidates.push_back({pose, iou, 1.0 - iou});
+      for (double depth : depths) {
+        if (nominal) {
+          for (double gx : grid_tx) {
+            for (double gy : grid_ty) {
+              Pose6D pose;
+              pose.rx = rx;
+              pose.ry = ry;
+              pose.rz = rz;
+              pose.tx = gx;
+              pose.ty = gy;
+              pose.tz = depth - c_rot.z;
+
+              if (pose.tz < 0.01) continue;
+              if (!PoseSatisfiesConstraints(pose, params)) {
+                ++skipped_by_constraints;
+                continue;
+              }
+
+              cv::Mat rendered = RenderPose(pose);
+              double iou = ComputeIoU(rendered, input_mask);
+
+              if (viz_) {
+                viz_->LogCandidate(candidate_index, pose, rendered, iou);
+              }
+              candidate_index++;
+
+              candidates.push_back({pose, iou, 1.0 - iou});
+            }
+          }
+        } else {
+          Pose6D pose;
+          pose.rx = rx;
+          pose.ry = ry;
+          pose.rz = rz;
+
+          double tz_total = depth;
+          pose.tx = (u_cx - camera_params_.cx) * tz_total / camera_params_.fx - c_rot.x;
+          pose.ty = (v_cy - camera_params_.cy) * tz_total / camera_params_.fy - c_rot.y;
+          pose.tz = tz_total - c_rot.z;
+
+          if (pose.tz < 0.01) continue;
+          if (!PoseSatisfiesConstraints(pose, params)) {
+            ++skipped_by_constraints;
+            continue;
+          }
+
+          cv::Mat rendered = RenderPose(pose);
+          double iou = ComputeIoU(rendered, input_mask);
+
+          if (viz_) {
+            viz_->LogCandidate(candidate_index, pose, rendered, iou);
+          }
+          candidate_index++;
+
+          candidates.push_back({pose, iou, 1.0 - iou});
+        }
       }
     }
+  }
+
+  if (skipped_by_constraints > 0) {
+    std::cout << "[Constraints] CoarseSearch skipped " << skipped_by_constraints
+              << " candidate pose(s) outside constraints\n";
   }
 
   std::sort(candidates.begin(), candidates.end(),
@@ -253,17 +361,22 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
 
   // Diversify: keep only one candidate per unique direction
   std::vector<ScoredCandidate> diverse;
-  auto dir_key = [](const Pose6D& p) -> int {
-    return static_cast<int>(p.rx * 100) + static_cast<int>(p.ry * 10000) +
-           static_cast<int>(p.rz * 1000000);
+  auto dir_key = [&params](const Pose6D& p) -> int64_t {
+    int64_t key = static_cast<int64_t>(p.rx * 10) * 100000 +
+                  static_cast<int64_t>(p.ry * 10) * 1000 +
+                  static_cast<int64_t>(p.rz * 10);
+    if (params.use_nominal_position) {
+      // ノミナルモードでは同一回転でも位置グリッドが異なる候補を区別する
+      key = key * 40401 +
+            (static_cast<int64_t>(std::lround(p.tx * 100)) + 2000) * 201 +
+            (static_cast<int64_t>(std::lround(p.ty * 100)) + 2000);
+    }
+    return key;
   };
-  std::set<int> seen_dirs;
+  std::set<int64_t> seen_dirs;
   for (const auto& c : candidates) {
     // Group by similar direction: quantize rotation
-    int key = static_cast<int>(c.pose.rx * 10) * 100000 +
-              static_cast<int>(c.pose.ry * 10) * 1000 +
-              static_cast<int>(c.pose.rz * 10);
-    if (seen_dirs.insert(key).second) {
+    if (seen_dirs.insert(dir_key(c.pose)).second) {
       diverse.push_back(c);
     }
     if (static_cast<int>(diverse.size()) >= params.top_k_coarse) break;
@@ -298,6 +411,7 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
                                        const NelderMeadOptions& nm_opts,
                                        const BobyqaOptions& bobyqa_opts,
                                        RefineMethod refine_method, int refine_index,
+                                       const EstimationParams* constraint_params,
                                        maskgen::MaskGenerator* generator) {
   std::vector<double> x = {initial.pose.tx, initial.pose.ty, initial.pose.tz,
                            initial.pose.rx, initial.pose.ry, initial.pose.rz};
@@ -323,6 +437,13 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
     p.rz = params[5];
 
     if (p.tz < 0.01) {
+      prof.total_wall_ms += std::chrono::duration<double, std::milli>(
+          std::chrono::high_resolution_clock::now() - t0).count();
+      return 1e6;
+    }
+
+    // 制約外の姿勢はペナルティで排除 (NM/BOBYQA共通)
+    if (constraint_params && !PoseSatisfiesConstraints(p, *constraint_params)) {
       prof.total_wall_ms += std::chrono::duration<double, std::milli>(
           std::chrono::high_resolution_clock::now() - t0).count();
       return 1e6;
@@ -392,7 +513,24 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
   };
 
   if (refine_method == RefineMethod::BOBYQA) {
-    Bobyqa(cost, x, initial_step, max_iterations, bobyqa_opts);
+    // tx/ty 範囲は NLopt のネイティブ bounds で扱う。軸制約は cost 側のペナルティで処理。
+    std::vector<double> lower(6, -HUGE_VAL), upper(6, HUGE_VAL);
+    bool has_box = false;
+    if (constraint_params) {
+      if (constraint_params->has_tx_range) {
+        lower[0] = constraint_params->tx_min;
+        upper[0] = constraint_params->tx_max;
+        has_box = true;
+      }
+      if (constraint_params->has_ty_range) {
+        lower[1] = constraint_params->ty_min;
+        upper[1] = constraint_params->ty_max;
+        has_box = true;
+      }
+    }
+    Bobyqa(cost, x, initial_step, max_iterations, bobyqa_opts,
+           nullptr, nullptr, has_box ? &lower : nullptr,
+           has_box ? &upper : nullptr);
   } else {
     NelderMead(cost, x, initial_step, max_iterations, nm_opts);
   }
@@ -490,6 +628,11 @@ std::vector<ScoredCandidate> PoseEstimator::LocalSearch(
           double rx, ry, rz;
           ExtractEulerZYX(R, rx, ry, rz);
 
+          // 軸制約外の回転は深度サンプリング前に弾く
+          if (!RotationSatisfiesAxisConstraints(rx, ry, rz, params.axis_constraints)) {
+            continue;
+          }
+
           glm::vec4 c_rot = R * glm::vec4(mesh_centroid_[0], mesh_centroid_[1],
                                            mesh_centroid_[2], 1.0f);
 
@@ -507,11 +650,19 @@ std::vector<ScoredCandidate> PoseEstimator::LocalSearch(
             pose.ry = ry;
             pose.rz = rz;
 
-            pose.tx = (u_cx - camera_params_.cx) * base_tz / camera_params_.fx - c_rot.x;
-            pose.ty = (v_cy - camera_params_.cy) * base_tz / camera_params_.fy - c_rot.y;
-            pose.tz = base_tz - c_rot.z;
+            if (params.use_nominal_position) {
+              // ノミナルモード: coarse候補の原点位置を引き継ぎ、回転・深度のみ探索
+              pose.tx = cand.pose.tx;
+              pose.ty = cand.pose.ty;
+              pose.tz = base_tz;  // 原点Z = coarse候補の原点Z + 深度オフセット
+            } else {
+              pose.tx = (u_cx - camera_params_.cx) * base_tz / camera_params_.fx - c_rot.x;
+              pose.ty = (v_cy - camera_params_.cy) * base_tz / camera_params_.fy - c_rot.y;
+              pose.tz = base_tz - c_rot.z;
+            }
 
             if (pose.tz < 0.01) continue;
+            if (!PoseSatisfiesConstraints(pose, params)) continue;
 
             cv::Mat rendered = RenderPose(pose);
 
@@ -555,6 +706,30 @@ std::vector<ScoredCandidate> PoseEstimator::LocalSearch(
 
 SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
                                      const EstimationParams& params) {
+  SearchResult result = EstimateImpl(input_mask, params);
+
+  // フォールバック: 制約付き推定のIoUが閾値未満なら制約なしで再試行する。
+  // (coarse候補が制約で全滅した場合も result.iou=0 でここに到達する)
+  if (EstimationHasConstraints(params) && params.fallback_unconstrained &&
+      result.iou < params.fallback_iou) {
+    std::cout << "\n[Fallback] Constrained result IoU=" << result.iou
+              << " < " << params.fallback_iou
+              << "; retrying without pose constraints\n";
+    EstimationParams unconstrained = StripPoseConstraints(params);
+    SearchResult fallback_result = EstimateImpl(input_mask, unconstrained);
+    if (fallback_result.iou > result.iou) {
+      std::cout << "[Fallback] Adopting unconstrained result (IoU "
+                << result.iou << " -> " << fallback_result.iou << ")\n";
+      return fallback_result;
+    }
+    std::cout << "[Fallback] Unconstrained retry did not improve (IoU "
+              << fallback_result.iou << "); keeping constrained result\n";
+  }
+  return result;
+}
+
+SearchResult PoseEstimator::EstimateImpl(const cv::Mat& input_mask,
+                                         const EstimationParams& params) {
   auto t_total_start = std::chrono::high_resolution_clock::now();
 
   auto t0 = std::chrono::high_resolution_clock::now();
@@ -719,6 +894,7 @@ SearchResult PoseEstimator::Estimate(const cv::Mat& input_mask,
       refine_results[i] = RefinePose(refine_candidates[i], binary_mask, dt_input,
                                      params.nelder_mead_iterations, params.nm_options,
                                      params.bobyqa_options, params.refine_method, i,
+                                     &params,
                                      thread_generators[thread_id].get());
     }
   };
