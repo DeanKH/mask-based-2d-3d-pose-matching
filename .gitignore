@@ -7,3 +7,5 @@ interactive-3d-annotation/
 *.rrd
 test/data/
 benchmark/
+cache/
+*.prof

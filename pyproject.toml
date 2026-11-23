@@ -1,0 +1,14 @@
+[project]
+name = "mask-based-2d-3d-pose-matching"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "flask>=3.0",
+]
+
+[tool.uv.workspace]
+members = [
+    "benchmark-viewer",
+]
