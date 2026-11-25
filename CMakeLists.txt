@@ -30,6 +30,7 @@ add_subdirectory(mask-generation)
 set(POSE_MATCHING_SOURCES
     src/main.cpp
     src/pose_estimator.cpp
+    src/edge_feature.cpp
     src/rerun_visualizer.cpp
 )
 
@@ -89,6 +90,7 @@ set(CACHED_SOURCES
     src/cached_main.cpp
     src/cached_pose_estimator.cpp
     src/contour_sampler.cpp
+    src/edge_feature.cpp
     src/refine_lm.cpp
     src/rerun_visualizer.cpp
 )
@@ -125,6 +127,7 @@ endif()
 add_executable(benchmark src/benchmark_main.cpp
     src/cached_pose_estimator.cpp
     src/contour_sampler.cpp
+    src/edge_feature.cpp
     src/refine_lm.cpp
     src/rerun_visualizer.cpp)
 

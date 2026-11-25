@@ -51,6 +51,12 @@ static void PrintUsage(const char* program) {
        << "  --early-termination-iou FLOAT  Stop refining remaining candidates when IoU exceeds this (default: disabled)\n"
        << "  --sort-metric STR    Sort metric: iou, hu, zernike, iou_zernike, centroid_iou, centroid_dt_l1, centroid_dt_l2, dt_iou, central_moments, shape_context, contour_chamfer, fourier (default: iou)\n"
        << "  --int-mask DIR       Save candidate overlay images to DIR (red=input, green=rendered)\n"
+       << "\nEdge-based matching (in addition to the mask silhouette):\n"
+       << "  --use-edges          Use RGB image edges (Canny) in the cost; requires --image\n"
+       << "  --edge-weight FLOAT  Edge cost weight (default: 0.3)\n"
+       << "  --edge-low FLOAT     Canny low threshold (default: 50)\n"
+       << "  --edge-high FLOAT    Canny high threshold (default: 150)\n"
+       << "  --edge-max-distance FLOAT  Edge DT normalization distance in px (default: 20)\n"
        << "\nCandidate pose constraints (cache must cover them; see cache-builder --axis-constraint):\n"
        << "  --axis-constraint SPEC  Axis direction constraint, repeatable (e.g. \"z:0,0,-1:30\")\n"
        << "  --tx-range MIN:MAX   Model origin tx allowed range in meters\n"
@@ -178,6 +184,28 @@ int main(int argc, char* argv[]) {
     } else if (arg == "--int-mask") {
       if (++i >= args.size()) return 1;
       est_params.int_mask_dir = args[i];
+    } else if (arg == "--use-edges") {
+      est_params.use_edges = true;
+    } else if (arg == "--edge-weight") {
+      if (++i >= args.size()) return 1;
+      est_params.edge_weight = std::stod(args[i]);
+      if (est_params.edge_weight < 0.0) {
+        std::cerr << "Error: --edge-weight must be >= 0\n";
+        return 1;
+      }
+    } else if (arg == "--edge-low") {
+      if (++i >= args.size()) return 1;
+      est_params.edge_low_threshold = std::stod(args[i]);
+    } else if (arg == "--edge-high") {
+      if (++i >= args.size()) return 1;
+      est_params.edge_high_threshold = std::stod(args[i]);
+    } else if (arg == "--edge-max-distance") {
+      if (++i >= args.size()) return 1;
+      est_params.edge_max_distance = std::stod(args[i]);
+      if (est_params.edge_max_distance <= 0.0) {
+        std::cerr << "Error: --edge-max-distance must be > 0\n";
+        return 1;
+      }
     } else if (arg == "--axis-constraint") {
       if (++i >= args.size()) {
         std::cerr << "Error: --axis-constraint requires a spec like \"z:0,0,-1:30\"\n";
@@ -276,6 +304,11 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  if (est_params.use_edges && image_path.empty()) {
+    std::cerr << "Error: --use-edges requires --image (RGB image for edge extraction)\n";
+    return 1;
+  }
+
   nlohmann::json cam_json;
   {
     std::ifstream f(camera_path);
@@ -323,6 +356,22 @@ int main(int argc, char* argv[]) {
           << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S") << ".rrd";
       viz = std::make_unique<pose_matching::RerunVisualizer>(oss.str());
       estimator.SetVisualizer(viz.get());
+    }
+
+    // エッジベース評価 (--use-edges): RGB画像を推定器に渡す
+    if (est_params.use_edges) {
+      cv::Mat rgb = cv::imread(image_path);
+      if (rgb.empty()) {
+        std::cerr << "Error: cannot read RGB image for --use-edges: " << image_path << "\n";
+        return 1;
+      }
+      if (rgb.cols != input_mask.cols || rgb.rows != input_mask.rows) {
+        std::cerr << "Error: --use-edges: RGB image size (" << rgb.cols << "x"
+                  << rgb.rows << ") does not match mask size (" << input_mask.cols
+                  << "x" << input_mask.rows << ")\n";
+        return 1;
+      }
+      estimator.SetInputImage(rgb);
     }
 
 #ifdef ENABLE_PROFILER

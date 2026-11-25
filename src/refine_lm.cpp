@@ -143,7 +143,9 @@ SearchResult RefinePoseLM(
     const maskgen::Mesh& mesh,
     maskgen::MaskGenerator& generator,
     const LMOptions& opts,
-    int refine_index) {
+    int refine_index,
+    const cv::Mat& edge_dt,
+    double edge_weight) {
   auto t_start = std::chrono::high_resolution_clock::now();
 
   cv::Mat edges;
@@ -181,6 +183,24 @@ SearchResult RefinePoseLM(
       gtsam::Symbol('x', 0), gtsam_points, dt_edges, dt_grad_x, dt_grad_y,
       camera_params.fx, camera_params.fy, camera_params.cx, camera_params.cy,
       camera_params.width, camera_params.height, robust_noise);
+  // エッジベース評価 (--use-edges): 同じ輪郭点を入力画像エッジDT上でも評価し、
+  // シルエットDT因子に加えてグラフに追加する。ノイズsigma = 1/edge_weight で
+  // シルエット項に対する相対重みを制御する。
+  if (edge_weight > 0.0 && !edge_dt.empty()) {
+    cv::Mat edge_grad_x, edge_grad_y;
+    cv::Sobel(edge_dt, edge_grad_x, CV_32F, 1, 0, 3);
+    cv::Sobel(edge_dt, edge_grad_y, CV_32F, 0, 1, 3);
+    auto edge_base_noise = gtsam::noiseModel::Isotropic::Sigma(
+        N, 1.0 / std::max(edge_weight, 1e-6));
+    auto edge_robust_noise = gtsam::noiseModel::Robust::Create(
+        gtsam::noiseModel::mEstimator::Huber::Create(5.0), edge_base_noise);
+    graph.emplace_shared<ContourDTFactor>(
+        gtsam::Symbol('x', 0), gtsam_points, edge_dt, edge_grad_x, edge_grad_y,
+        camera_params.fx, camera_params.fy, camera_params.cx, camera_params.cy,
+        camera_params.width, camera_params.height, edge_robust_noise);
+    std::cout << "[RefineLM #" << refine_index
+              << "] Edge factor enabled: weight=" << edge_weight << "\n";
+  }
   graph.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(
       gtsam::Symbol('x', 0), initial_gtsam, prior_noise);
 

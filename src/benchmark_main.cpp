@@ -53,6 +53,12 @@ static void PrintUsage(const char* program) {
       << "  --sort-metric STR    Sort metric: iou, centroid_iou, etc. (default: iou)\n"
       << "  --bobyqa-population INT  BOBYQA interpolation points: 0=auto(2n+1), 28=full quadratic (default: 0)\n"
       << "  --bobyqa-step-scale FLOAT  BOBYQA initial step scale factor (default: 1.0)\n"
+      << "\nEdge-based matching (uses each sample's rgb.png):\n"
+      << "  --use-edges          Use RGB image edges (Canny) in the cost (default: off)\n"
+      << "  --edge-weight FLOAT  Edge cost weight (default: 0.3)\n"
+      << "  --edge-low FLOAT     Canny low threshold (default: 50)\n"
+      << "  --edge-high FLOAT    Canny high threshold (default: 150)\n"
+      << "  --edge-max-distance FLOAT  Edge DT normalization distance in px (default: 20)\n"
       << "\nCandidate pose constraints (per-dataset; cache must cover them):\n"
       << "  --axis-constraint SPEC  Axis direction constraint, repeatable (e.g. \"z:0,0,-1:30\")\n"
       << "  --tx-range MIN:MAX   Model origin tx allowed range in meters\n"
@@ -314,6 +320,24 @@ int main(int argc, char* argv[]) {
       cfg.est_params.bobyqa_options.population = std::stoi(args[++i]);
     } else if (arg == "--bobyqa-step-scale") {
       cfg.est_params.bobyqa_options.initial_step_scale = std::stod(args[++i]);
+    } else if (arg == "--use-edges") {
+      cfg.est_params.use_edges = true;
+    } else if (arg == "--edge-weight") {
+      cfg.est_params.edge_weight = std::stod(args[++i]);
+      if (cfg.est_params.edge_weight < 0.0) {
+        std::cerr << "Error: --edge-weight must be >= 0\n";
+        return 1;
+      }
+    } else if (arg == "--edge-low") {
+      cfg.est_params.edge_low_threshold = std::stod(args[++i]);
+    } else if (arg == "--edge-high") {
+      cfg.est_params.edge_high_threshold = std::stod(args[++i]);
+    } else if (arg == "--edge-max-distance") {
+      cfg.est_params.edge_max_distance = std::stod(args[++i]);
+      if (cfg.est_params.edge_max_distance <= 0.0) {
+        std::cerr << "Error: --edge-max-distance must be > 0\n";
+        return 1;
+      }
     } else if (arg == "--axis-constraint") {
       if (++i >= args.size()) {
         std::cerr << "Error: --axis-constraint requires a spec like \"z:0,0,-1:30\"\n";
@@ -460,7 +484,10 @@ int main(int argc, char* argv[]) {
     case pose_matching::CandidateSortMetric::FourierDescriptor: sort_metric_tag = "fourier"; break;
   }
 
-  fs::path out_folder = cfg.output_dir / (timestamp + "_" + refine_tag);
+  std::string folder_suffix = refine_tag;
+  if (cfg.est_params.use_edges) folder_suffix += "_edges";
+
+  fs::path out_folder = cfg.output_dir / (timestamp + "_" + folder_suffix);
   fs::create_directories(out_folder);
   std::cout << "Output: " << out_folder << "\n";
 
@@ -536,6 +563,18 @@ int main(int argc, char* argv[]) {
         sr.gt_rx = gt_pose.value("rx", 0.0);
         sr.gt_ry = gt_pose.value("ry", 0.0);
         sr.gt_rz = gt_pose.value("rz", 0.0);
+      }
+
+      // エッジベース評価 (--use-edges): サンプルのRGB画像を推定器に渡す
+      if (cfg.est_params.use_edges) {
+        cv::Mat rgb = cv::imread(rgb_path.string());
+        if (rgb.empty()) {
+          sr.error_msg = "Failed to read rgb.png for edge matching";
+          std::cerr << "[ERROR] " << sample_id << ": cannot read " << rgb_path << "\n";
+          all_results.push_back(sr);
+          continue;
+        }
+        estimator.SetInputImage(rgb);
       }
 
       std::cout << "  [" << sample_id << "] ";
@@ -628,6 +667,11 @@ int main(int argc, char* argv[]) {
       {"sort_metric", sort_metric_tag},
       {"bobyqa_population", cfg.est_params.bobyqa_options.population},
       {"bobyqa_step_scale", cfg.est_params.bobyqa_options.initial_step_scale},
+      {"use_edges", cfg.est_params.use_edges},
+      {"edge_weight", cfg.est_params.edge_weight},
+      {"edge_low_threshold", cfg.est_params.edge_low_threshold},
+      {"edge_high_threshold", cfg.est_params.edge_high_threshold},
+      {"edge_max_distance", cfg.est_params.edge_max_distance},
   };
   results_json["summary"] = {
       {"total_samples", all_results.size()},

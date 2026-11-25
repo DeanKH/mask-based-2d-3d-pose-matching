@@ -17,6 +17,8 @@
 
 #include "profiling.h"
 
+#include "edge_feature.h"
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <opencv2/imgproc.hpp>
@@ -83,6 +85,8 @@ PoseEstimator::PoseEstimator(const maskgen::CameraParams& camera_params,
 }
 
 void PoseEstimator::SetVisualizer(Visualizer* viz) { viz_ = viz; }
+
+void PoseEstimator::SetInputImage(const cv::Mat& rgb) { input_rgb_ = rgb; }
 
 cv::Mat PoseEstimator::RenderPose(const Pose6D& pose) {
   maskgen::MeshPose mp;
@@ -173,6 +177,15 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
   double v_cy = m.m01 / m.m00;
 
   double area_input = cv::countNonZero(input_mask);
+
+  // エッジコスト項 (--use-edges 時): レンダリング輪郭と画像エッジの一致
+  const bool use_edge_cost = params.use_edges && !edge_dt_.empty();
+  auto edge_term = [&](const cv::Mat& rendered) -> double {
+    return use_edge_cost ? params.edge_weight *
+                               ContourEdgeCost(rendered, edge_dt_,
+                                               params.edge_max_distance)
+                         : 0.0;
+  };
 
   const bool nominal = params.use_nominal_position;
 
@@ -315,7 +328,7 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
               }
               candidate_index++;
 
-              candidates.push_back({pose, iou, 1.0 - iou});
+              candidates.push_back({pose, iou, 1.0 - iou + edge_term(rendered)});
             }
           }
         } else {
@@ -343,7 +356,7 @@ std::vector<ScoredCandidate> PoseEstimator::CoarseSearch(
           }
           candidate_index++;
 
-          candidates.push_back({pose, iou, 1.0 - iou});
+          candidates.push_back({pose, iou, 1.0 - iou + edge_term(rendered)});
         }
       }
     }
@@ -424,6 +437,18 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
 
   int viz_iteration = 0;
   RefineProfiler prof;
+
+  // エッジコスト項 (--use-edges 時): constraint_params に EstimationParams が渡される
+  const bool use_edge_cost =
+      constraint_params && constraint_params->use_edges && !edge_dt_.empty();
+  auto edge_term = [&](const cv::Mat& rendered) -> double {
+    return use_edge_cost
+               ? constraint_params->edge_weight *
+                     ContourEdgeCost(rendered, edge_dt_,
+                                     constraint_params->edge_max_distance)
+               : 0.0;
+  };
+
   auto cost = [&](const std::vector<double>& params) -> double {
     prof.cost_evals++;
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -492,7 +517,7 @@ SearchResult PoseEstimator::RefinePose(const ScoredCandidate& initial,
                        : 0.0;
     }
 
-    double c = chamfer_val + 0.5 * area_ratio;
+    double c = chamfer_val + 0.5 * area_ratio + edge_term(rendered);
 
     if (viz_ && viz_iteration % 5 == 0) {
       ScopedTimer t(prof.viz_ms);
@@ -683,6 +708,11 @@ std::vector<ScoredCandidate> PoseEstimator::LocalSearch(
                                     : 0.0;
 
             double cost = chamfer + 0.5 * area_ratio;
+            if (params.use_edges && !edge_dt_.empty()) {
+              cost += params.edge_weight * ContourEdgeCost(
+                                               rendered, edge_dt_,
+                                               params.edge_max_distance);
+            }
             double iou = ComputeIoU(rendered, input_mask);
 
             all_local.push_back({pose, iou, cost});
@@ -754,6 +784,27 @@ SearchResult PoseEstimator::EstimateImpl(const cv::Mat& input_mask,
   auto t1 = std::chrono::high_resolution_clock::now();
   double preprocess_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
   std::cout << "[Timing] Preprocessing: " << preprocess_ms << " ms\n";
+
+  // エッジDTの準備 (--use-edges 時)
+  edge_dt_ = cv::Mat();
+  if (params.use_edges) {
+    if (input_rgb_.empty()) {
+      throw std::runtime_error(
+          "--use-edges requires an RGB input image (pass --image / SetInputImage)");
+    }
+    if (input_rgb_.cols != binary_mask.cols ||
+        input_rgb_.rows != binary_mask.rows) {
+      throw std::runtime_error(
+          "--use-edges: RGB image size does not match the mask size");
+    }
+    cv::Mat edges = ExtractEdgeMap(input_rgb_, params.edge_low_threshold,
+                                   params.edge_high_threshold);
+    edge_dt_ = ComputeEdgeDistanceTransform(edges);
+    std::cout << "[Edges] enabled: weight=" << params.edge_weight
+              << ", canny=[" << params.edge_low_threshold << ","
+              << params.edge_high_threshold << "]"
+              << ", edge pixels=" << cv::countNonZero(edges) << "\n";
+  }
 
   auto t_coarse_start = std::chrono::high_resolution_clock::now();
   auto coarse = CoarseSearch(binary_mask, dt_input, params);

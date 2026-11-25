@@ -160,6 +160,49 @@ cost = chamfer + 0.5 × area_ratio
 
 ---
 
+## エッジベース評価 (オプション)
+
+`--use-edges` で、マスク (シルエット) 一致に加えて入力RGB画像のエッジ一致もコストに組み込む。
+キャッシュ版 (`pose_matching_cached`) とベーシック版 (`pose_matching`) の両方で利用可能
+(`--image` でRGB画像の指定が必須)。
+
+### 仕組み
+
+```
+RGB画像 → Cannyエッジ抽出 → エッジ距離変換 (edge DT)
+候補姿勢のレンダリング輪郭 (シルエット境界画素) → edge DT 上で参照
+edge_cost = mean( min(dt, edge_max_distance) ) / edge_max_distance   ∈ [0,1]
+```
+
+レンダリング輪郭が画像エッジ (物体の輪郭エッジ) に近いほど edge_cost が0に近づく。
+シルエットが似た別姿勢の曖昧さを、テクスチャエッジの情報で解消するのが狙い。
+
+### 適用箇所
+
+| 段階 | 適用方法 |
+|---|---|
+| CoarseSearch (cached: フル解像度 Phase 2) | `cost = (1 - IoU) + edge_weight × edge_cost` |
+| LocalSearch | `cost = chamfer + 0.5 × area_ratio + edge_weight × edge_cost` |
+| RefinePose (Nelder-Mead / BOBYQA) | 上と同じコストに edge_cost を加算 |
+| RefinePose (LM / GaussNewton) | GTSAMグラフにエッジDT因子 (ContourDTFactor を流用, σ = 1/edge_weight) を追加 |
+
+注意: GPU compute cost (`GeneratePoseWithCost`) はレンダリングマスクを返さないため、
+`--use-edges` 有効時は CPU (OpenCV) 評価に自動切り替わる (NM/BOBYQA はマルチスレッド化)。
+
+### パラメータ
+
+| パラメータ | CLI | デフォルト | 説明 |
+|---|---|---|---|
+| `use_edges` | `--use-edges` | false | エッジ評価の有効化 (要 `--image`) |
+| `edge_weight` | `--edge-weight` | 0.3 | エッジコストの重み |
+| `edge_low_threshold` | `--edge-low` | 50 | Canny 低閾値 |
+| `edge_high_threshold` | `--edge-high` | 150 | Canny 高閾値 |
+| `edge_max_distance` | `--edge-max-distance` | 20 px | エッジDT正規化距離 (これを超えるDTは打ち切り) |
+
+実装は `src/edge_feature.{h,cpp}`。
+
+---
+
 ## パラメータ一覧
 
 | パラメータ | デフォルト | 説明 |

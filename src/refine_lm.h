@@ -23,6 +23,9 @@ struct LMOptions {
   double absolute_tol = 1e-6;
 };
 
+// LM/GN による6DoF精密化。
+// edge_dt が空でなく edge_weight > 0 の場合、シルエットDT因子に加えて
+// 入力画像エッジDT因子 (輪郭点が画像エッジに近いほど誤差小) をグラフに追加する。
 SearchResult RefinePoseLM(
     const ScoredCandidate& initial,
     const cv::Mat& input_mask,
@@ -31,6 +34,8 @@ SearchResult RefinePoseLM(
     const maskgen::Mesh& mesh,
     maskgen::MaskGenerator& generator,
     const LMOptions& opts,
-    int refine_index);
+    int refine_index,
+    const cv::Mat& edge_dt = cv::Mat(),
+    double edge_weight = 0.0);
 
 }  // namespace pose_matching

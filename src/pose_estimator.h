@@ -122,6 +122,17 @@ struct EstimationParams {
   double nominal_tol_tz = 0.03;
   int nominal_grid = 3;  // tx/ty それぞれのサンプル数 (±tol を含む等間隔)
 
+  // ---- エッジベース評価 (CLI: --use-edges) ----
+  // 有効時、入力RGB画像 (SetInputImage) からCannyエッジを抽出し、
+  // レンダリング輪郭と画像エッジの一致をコストに加算する。
+  // マスク (シルエット) 一致に加えてエッジ一致も使うことで、
+  // シルエットが似た姿勢の曖昧さを軽減する。
+  bool use_edges = false;
+  double edge_weight = 0.3;           // エッジコストの重み
+  double edge_low_threshold = 50.0;   // Canny 低閾値
+  double edge_high_threshold = 150.0;  // Canny 高閾値
+  double edge_max_distance = 20.0;      // エッジDT正規化距離 [px]
+
   // ---- フォールバック ----
   // 制約付き推定の最終IoUが fallback_iou 未満の場合、制約なしで再推定する。
   bool fallback_unconstrained = true;
@@ -263,6 +274,10 @@ class PoseEstimator {
 
   void SetVisualizer(Visualizer* viz);
 
+  // エッジベース評価 (--use-edges) 用の入力RGB画像を設定する。
+  // マスクと同じ解像度であること。
+  void SetInputImage(const cv::Mat& rgb);
+
   SearchResult Estimate(const cv::Mat& input_mask,
                         const EstimationParams& params = EstimationParams());
 
@@ -295,6 +310,11 @@ class PoseEstimator {
   maskgen::Mesh mesh_;
   std::unique_ptr<maskgen::MaskGenerator> generator_;
   Visualizer* viz_ = nullptr;
+
+  // エッジベース評価 (--use-edges) 用の入力画像とそのエッジDT。
+  // EstimateImpl で use_edges 時に edge_dt_ を構築する。
+  cv::Mat input_rgb_;
+  cv::Mat edge_dt_;
 
   int principal_axis_;
   float mesh_centroid_[3];

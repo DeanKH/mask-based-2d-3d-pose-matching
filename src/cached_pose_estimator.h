@@ -28,6 +28,10 @@ class CachedPoseEstimator {
 
   void SetVisualizer(Visualizer* viz);
 
+  // エッジベース評価 (--use-edges) 用の入力RGB画像を設定する。
+  // マスクと同じ解像度であること。
+  void SetInputImage(const cv::Mat& rgb);
+
   SearchResult Estimate(const cv::Mat& input_mask,
                         const EstimationParams& params = EstimationParams());
 
@@ -78,6 +82,11 @@ class CachedPoseEstimator {
   maskgen::Mesh mesh_;
   std::unique_ptr<maskgen::MaskGenerator> generator_;
   Visualizer* viz_ = nullptr;
+
+  // エッジベース評価 (--use-edges) 用の入力画像とそのエッジDT。
+  // EstimateImpl で use_edges 時に edge_dt_ を構築する。
+  cv::Mat input_rgb_;
+  cv::Mat edge_dt_;
 
   int principal_axis_;
   float mesh_centroid_[3];

@@ -20,6 +20,7 @@
 #include "profiling.h"
 
 #include "contour_sampler.h"
+#include "edge_feature.h"
 #include "refine_lm.h"
 
 #include <nlohmann/json.hpp>
@@ -471,6 +472,8 @@ CachedPoseEstimator::CachedPoseEstimator(
 
 void CachedPoseEstimator::SetVisualizer(Visualizer* viz) { viz_ = viz; }
 
+void CachedPoseEstimator::SetInputImage(const cv::Mat& rgb) { input_rgb_ = rgb; }
+
 cv::Mat CachedPoseEstimator::DecodeMask(size_t mask_offset, uint32_t mask_size) const {
   const uint8_t* compressed = cache_.mask_data.data() + mask_offset;
   int packed_cols = (cache_.header.image_width + 7) / 8;
@@ -708,7 +711,15 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedCoarseSearch(
     pose.ty = combo.ty;
     pose.tz = tz;
 
-    fullres_results[fi] = {pose, iou, 1.0 - iou};
+    double cost = 1.0 - iou;
+    if (params.use_edges && !edge_dt_.empty()) {
+      // エッジコスト項: シフト済み候補マスクの輪郭と画像エッジの一致
+      cv::Mat shifted = ShiftMask(decoded_coarse_masks_[ei], combo.du, combo.dv);
+      cost += params.edge_weight *
+              ContourEdgeCost(shifted, edge_dt_, params.edge_max_distance);
+    }
+
+    fullres_results[fi] = {pose, iou, cost};
   }
 
   std::vector<ScoredCandidate> candidates;
@@ -941,6 +952,11 @@ std::vector<ScoredCandidate> CachedPoseEstimator::CachedLocalSearch(
                             : 0.0;
 
     double cost = chamfer + 0.5 * area_ratio;
+    if (params.use_edges && !edge_dt_.empty()) {
+      // エッジコスト項: シフト済み候補マスクの輪郭と画像エッジの一致
+      cost += params.edge_weight *
+              ContourEdgeCost(shifted, edge_dt_, params.edge_max_distance);
+    }
     int du = static_cast<int>(std::round(entry_du[li]));
     int dv = static_cast<int>(std::round(entry_dv[li]));
     double iou = ShiftedIoU(base_mask, input_mask, du, dv,
@@ -1040,7 +1056,13 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
     mp.ry = p.ry;
     mp.rz = p.rz;
 
-    bool use_gpu = generator->HasComputeCost() && !viz_ && !force_cpu;
+    // エッジコスト (--use-edges) はレンダリングマスクの輪郭が必要なため、
+    // GPU compute cost (マスクを返さない) とは併用できず CPU 評価に切り替える。
+    const bool use_edge_cost =
+        constraint_params && constraint_params->use_edges && !edge_dt_.empty();
+
+    bool use_gpu = generator->HasComputeCost() && !viz_ && !force_cpu &&
+                   !use_edge_cost;
 
     double c;
 
@@ -1090,6 +1112,13 @@ SearchResult CachedPoseEstimator::RefinePose(const ScoredCandidate& initial,
       }
 
       c = chamfer_val + 0.5 * area_ratio;
+
+      if (use_edge_cost) {
+        // エッジコスト項: レンダリング輪郭と入力画像エッジの一致
+        c += constraint_params->edge_weight *
+             ContourEdgeCost(rendered, edge_dt_,
+                             constraint_params->edge_max_distance);
+      }
 
       if (viz_ && viz_iteration % 5 == 0) {
         ScopedTimer t(prof.viz_ms);
@@ -1285,6 +1314,27 @@ SearchResult CachedPoseEstimator::EstimateImpl(const cv::Mat& input_mask,
   auto t1 = std::chrono::high_resolution_clock::now();
   double preprocess_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
   std::cout << "[Timing] Preprocessing: " << preprocess_ms << " ms\n";
+
+  // エッジDTの準備 (--use-edges 時)
+  edge_dt_ = cv::Mat();
+  if (params.use_edges) {
+    if (input_rgb_.empty()) {
+      throw std::runtime_error(
+          "--use-edges requires an RGB input image (pass --image / SetInputImage)");
+    }
+    if (input_rgb_.cols != binary_mask.cols ||
+        input_rgb_.rows != binary_mask.rows) {
+      throw std::runtime_error(
+          "--use-edges: RGB image size does not match the mask size");
+    }
+    cv::Mat edges = ExtractEdgeMap(input_rgb_, params.edge_low_threshold,
+                                   params.edge_high_threshold);
+    edge_dt_ = ComputeEdgeDistanceTransform(edges);
+    std::cout << "[Edges] enabled: weight=" << params.edge_weight
+              << ", canny=[" << params.edge_low_threshold << ","
+              << params.edge_high_threshold << "]"
+              << ", edge pixels=" << cv::countNonZero(edges) << "\n";
+  }
 
   auto t_coarse_start = std::chrono::high_resolution_clock::now();
   auto coarse = CachedCoarseSearch(binary_mask, dt_input, params);
@@ -1538,7 +1588,14 @@ SearchResult CachedPoseEstimator::EstimateImpl(const cv::Mat& input_mask,
     const char* method_tag = (params.refine_method == RefineMethod::BOBYQA) ? "BOBYQA" : "NM";
     const unsigned int hw_threads = std::thread::hardware_concurrency();
     const int num_threads = std::max(1, static_cast<int>(hw_threads)-2);
-    const bool use_gpu = generator_->HasComputeCost() && !params.use_cpu;
+    // エッジコストはレンダリングマスクの輪郭が必要なため GPU compute cost と
+    // 併用できず、エッジ有効時は CPU 評価 (マルチスレッド) に切り替える。
+    const bool use_gpu = generator_->HasComputeCost() && !params.use_cpu &&
+                         !params.use_edges;
+    if (params.use_edges && generator_->HasComputeCost() && !params.use_cpu) {
+      std::cout << "[Edges] Edge-aware cost requires the rendered mask;"
+                << " using CPU cost evaluation\n";
+    }
     const int actual_threads = use_gpu ? 1 : std::min(num_threads, refine_count);
 
     std::vector<std::unique_ptr<maskgen::MaskGenerator>> thread_generators(actual_threads);
@@ -1624,7 +1681,10 @@ SearchResult CachedPoseEstimator::EstimateImpl(const cv::Mat& input_mask,
 
       SearchResult refined = RefinePoseLM(
           refine_candidates[i], binary_mask, contour_3d,
-          camera_params_, mesh_, *generator_, lm_opts, i);
+          camera_params_, mesh_, *generator_, lm_opts, i,
+          edge_dt_, params.use_edges && !edge_dt_.empty()
+                        ? params.edge_weight
+                        : 0.0);
       if (refined.iou > best_result.iou) {
         best_result = refined;
       }

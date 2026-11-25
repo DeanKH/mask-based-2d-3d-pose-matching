@@ -22,6 +22,7 @@ Mask-based 2D-3D Pose Matching — セグメンテーションマスクと3Dモ�
 │   ├── cache_format.{h,cpp}           # キャッシュのシリアライズ (zlib圧縮 + SHA256ハッシュ、mmap読込対応)
 │   ├── contour_sampler.{h,cpp}        # マスク輪郭の3Dサンプリング
 │   ├── refine_lm.{h,cpp}              # GTSAMベース LM/GaussNewton 精密化 (RefinePoseLM)
+│   ├── edge_feature.{h,cpp}           # エッジベース評価 (Canny + DT, --use-edges)
 │   ├── nelder_mead.h                  # ヘッダオンリー Nelder-Mead
 │   ├── bobyqa.h                       # ヘッダオンリー NLopt BOBYQA ラッパ (abort対応)
 │   ├── pose_estimator.{h,cpp}         # 基本推定器 (RefineMethod/CandidateSortMetric enum定義)
@@ -138,4 +139,10 @@ Stage 3: Refinement
   デフォルト手法: Nelder-Mead (双方向Chamfer距離 + 面積比をコスト)
   選択可能: Levenberg-Marquardt / GaussNewton (GTSAM, refine_lm.cpp)
            BOBYQA (NLopt, bobyqa.h)
+
+オプション: エッジベース評価 (--use-edges, src/edge_feature.{h,cpp})
+  入力RGB画像のCannyエッジとレンダリング輪郭の一致をコストに加算
+  (Coarse/Local/Refineの各段階に適用、LMはGTSAMのエッジDT因子で追加)
+  要 --image、GPU compute cost とは併用不可 (自動でCPU評価に切替)
+  docs/method.md の「エッジベース評価」参照
 ```
